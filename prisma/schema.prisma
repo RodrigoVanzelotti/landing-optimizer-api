@@ -1,0 +1,371 @@
+// Landing Optimizer — PostgreSQL app schema.
+// See ../landing-optimizer-infra/docs/DATABASE_SCHEMA.md
+// No visitor PII is stored here. `user.email` is operator/account data only.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// ---------------------------------------------------------------------------
+/// Enums
+/// ---------------------------------------------------------------------------
+
+enum Plan {
+  free
+  pro
+  enterprise
+}
+
+enum SiteStatus {
+  active
+  paused
+}
+
+enum Role {
+  owner
+  admin
+  editor
+  viewer
+}
+
+enum GoalKind {
+  event
+  url
+  form_submit
+}
+
+enum ExperimentType {
+  copy
+  cta
+  headline
+  subheadline
+  button_style
+  section_order
+  section_visibility
+  layout_class
+}
+
+enum ExperimentStatus {
+  draft
+  ai_suggested
+  pending_review
+  approved
+  scheduled
+  running
+  paused
+  completed
+  rejected
+  rolled_back
+}
+
+enum ChangeOp {
+  set_text
+  set_html_safe
+  set_attr
+  add_class
+  remove_class
+  hide
+  show
+  reorder
+}
+
+enum ApprovalStatus {
+  pending
+  approved
+  rejected
+}
+
+enum RiskLevel {
+  low
+  medium
+  high
+}
+
+enum SuggestionKind {
+  hypothesis
+  headline
+  cta
+  friction
+  section
+  score
+  plan
+}
+
+/// ---------------------------------------------------------------------------
+/// Core tenancy
+/// ---------------------------------------------------------------------------
+
+model Tenant {
+  id         String   @id
+  name       String
+  slug       String   @unique
+  plan       Plan     @default(free)
+  dataRegion String   @default("us") @map("data_region")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  memberships   UserMembership[]
+  sites         Site[]
+  apiKeys       ApiKey[]
+  experiments   Experiment[]
+  auditLogs     AuditLog[]
+  aiSuggestions AiSuggestion[]
+
+  @@map("tenant")
+}
+
+model User {
+  id           String   @id
+  email        String   @unique
+  name         String?
+  passwordHash String?  @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  memberships UserMembership[]
+
+  @@map("user")
+}
+
+model UserMembership {
+  id        String   @id
+  tenantId  String   @map("tenant_id")
+  userId    String   @map("user_id")
+  role      Role     @default(viewer)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
+  @@index([userId])
+  @@map("user_membership")
+}
+
+model ApiKey {
+  id         String    @id
+  tenantId   String    @map("tenant_id")
+  name       String
+  hashedKey  String    @map("hashed_key")
+  scopes     String[]
+  lastUsedAt DateTime? @map("last_used_at")
+  revokedAt  DateTime? @map("revoked_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("api_key")
+}
+
+/// ---------------------------------------------------------------------------
+/// Sites & configuration
+/// ---------------------------------------------------------------------------
+
+model Site {
+  id            String     @id
+  tenantId      String     @map("tenant_id")
+  name          String
+  primaryDomain String     @map("primary_domain")
+  publicKey     String     @map("public_key")
+  privateKeyEnc Bytes      @map("private_key_enc")
+  ingestKey     String     @unique @map("ingest_key")
+  samplingRate  Decimal    @default(1.0) @map("sampling_rate") @db.Decimal(4, 3)
+  status        SiteStatus @default(active)
+  settings      Json       @default("{}")
+  configVersion Int        @default(0) @map("config_version")
+  createdAt     DateTime   @default(now()) @map("created_at")
+  updatedAt     DateTime   @updatedAt @map("updated_at")
+
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  origins     SiteOrigin[]
+  goals       ConversionGoal[]
+  experiments Experiment[]
+  guardrail   BrandGuardrail?
+  pageMaps    PageMap[]
+
+  @@index([tenantId])
+  @@map("site")
+}
+
+model SiteOrigin {
+  id        String   @id
+  siteId    String   @map("site_id")
+  origin    String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@unique([siteId, origin])
+  @@map("site_origin")
+}
+
+model ConversionGoal {
+  id        String   @id
+  siteId    String   @map("site_id")
+  name      String
+  kind      GoalKind @default(event)
+  matcher   Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  site        Site         @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  experiments Experiment[]
+
+  @@unique([siteId, name])
+  @@map("conversion_goal")
+}
+
+/// ---------------------------------------------------------------------------
+/// Experiments
+/// ---------------------------------------------------------------------------
+
+model Experiment {
+  id              String           @id
+  tenantId        String           @map("tenant_id")
+  siteId          String           @map("site_id")
+  name            String
+  hypothesis      String?
+  status          ExperimentStatus @default(draft)
+  type            ExperimentType
+  targeting       Json             @default("{}")
+  allocation      Decimal          @default(0.5) @map("allocation") @db.Decimal(4, 3)
+  primaryGoalId   String?          @map("primary_goal_id")
+  riskScore       Int              @default(0) @map("risk_score")
+  winnerVariantId String?          @map("winner_variant_id")
+  createdBy       String?          @map("created_by")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+  startedAt       DateTime?        @map("started_at")
+  endedAt         DateTime?        @map("ended_at")
+
+  tenant      Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  site        Site            @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  primaryGoal ConversionGoal? @relation(fields: [primaryGoalId], references: [id])
+  variants    Variant[]
+  approvals   Approval[]
+  suggestions AiSuggestion[]
+
+  @@index([tenantId])
+  @@index([siteId, status])
+  @@map("experiment")
+}
+
+model Variant {
+  id           String   @id
+  experimentId String   @map("experiment_id")
+  name         String
+  isControl    Boolean  @default(false) @map("is_control")
+  weight       Decimal  @default(0.5) @db.Decimal(4, 3)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  experiment Experiment      @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  changes    VariantChange[]
+
+  @@index([experimentId])
+  @@map("variant")
+}
+
+model VariantChange {
+  id            String   @id
+  variantId     String   @map("variant_id")
+  selector      String
+  op            ChangeOp
+  originalValue String?  @map("original_value")
+  proposedValue String?  @map("proposed_value")
+  attrName      String?  @map("attr_name")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  variant Variant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@index([variantId])
+  @@map("variant_change")
+}
+
+model Approval {
+  id             String         @id
+  experimentId   String         @map("experiment_id")
+  status         ApprovalStatus @default(pending)
+  reason         String?
+  riskScore      Int            @default(0) @map("risk_score")
+  checklist      Json           @default("{}")
+  screenshotUrl  String?        @map("screenshot_url")
+  approverUserId String?        @map("approver_user_id")
+  decidedAt      DateTime?      @map("decided_at")
+  createdAt      DateTime       @default(now()) @map("created_at")
+
+  experiment Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+
+  @@index([experimentId])
+  @@index([status])
+  @@map("approval")
+}
+
+/// ---------------------------------------------------------------------------
+/// AI, guardrails, page map, audit
+/// ---------------------------------------------------------------------------
+
+model AiSuggestion {
+  id             String         @id
+  tenantId       String         @map("tenant_id")
+  siteId         String         @map("site_id")
+  kind           SuggestionKind
+  payload        Json
+  model          String
+  expectedImpact String?        @map("expected_impact")
+  riskLevel      RiskLevel      @default(low) @map("risk_level")
+  experimentId   String?        @map("experiment_id")
+  createdAt      DateTime       @default(now()) @map("created_at")
+
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  experiment Experiment? @relation(fields: [experimentId], references: [id])
+
+  @@index([siteId])
+  @@map("ai_suggestion")
+}
+
+model BrandGuardrail {
+  id        String   @id
+  siteId    String   @unique @map("site_id")
+  rules     Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@map("brand_guardrail")
+}
+
+model PageMap {
+  id         String   @id
+  siteId     String   @map("site_id")
+  urlPath    String   @map("url_path")
+  map        Json
+  capturedAt DateTime @default(now()) @map("captured_at")
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([siteId, urlPath])
+  @@map("page_map")
+}
+
+model AuditLog {
+  id          String   @id
+  tenantId    String   @map("tenant_id")
+  actorUserId String?  @map("actor_user_id")
+  action      String
+  targetType  String   @map("target_type")
+  targetId    String   @map("target_id")
+  metadata    Json     @default("{}")
+  ipHash      String?  @map("ip_hash")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@map("audit_log")
+}
