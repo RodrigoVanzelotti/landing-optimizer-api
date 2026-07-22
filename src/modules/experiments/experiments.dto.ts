@@ -19,7 +19,7 @@ const VariantChangeSchema = z.object({
     .string()
     .min(1)
     .max(256)
-    .refine((s) => !/[\[\](){}<'"`;:,]/.test(s) && SAFE_SELECTOR.test(s.trim()), {
+    .refine((s) => !/[[\](){}<'"`;:,]/.test(s) && SAFE_SELECTOR.test(s.trim()), {
       message: 'unsafe or unsupported selector',
     }),
   op: ChangeOpEnum,

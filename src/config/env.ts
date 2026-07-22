@@ -40,7 +40,6 @@ export type AppEnv = z.infer<typeof EnvSchema>;
 export function validateEnv(raw: Record<string, unknown>): AppEnv {
   const parsed = EnvSchema.safeParse(raw);
   if (!parsed.success) {
-    // eslint-disable-next-line no-console
     console.error('Invalid environment configuration:', parsed.error.flatten().fieldErrors);
     throw new Error('Invalid environment configuration');
   }

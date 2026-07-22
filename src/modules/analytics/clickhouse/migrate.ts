@@ -50,7 +50,6 @@ async function main(): Promise<void> {
 
   for (const file of files) {
     if (applied.has(file)) {
-      // eslint-disable-next-line no-console
       console.log(`skip  ${file}`);
       continue;
     }
@@ -68,17 +67,14 @@ async function main(): Promise<void> {
       values: [{ name: file }],
       format: 'JSONEachRow',
     });
-    // eslint-disable-next-line no-console
     console.log(`apply ${file}`);
   }
 
   await client.close();
-  // eslint-disable-next-line no-console
   console.log('ClickHouse migrations complete');
 }
 
 main().catch((err) => {
-  // eslint-disable-next-line no-console
   console.error(err);
   process.exit(1);
 });
