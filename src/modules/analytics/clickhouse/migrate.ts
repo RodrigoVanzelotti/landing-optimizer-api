@@ -43,7 +43,7 @@ async function main(): Promise<void> {
     ).map((r) => r.name),
   );
 
-  const dir = join(__dirname, '..', '..', '..', 'clickhouse', 'migrations');
+  const dir = join(__dirname, '..', '..', '..', '..', 'clickhouse', 'migrations');
   const files = readdirSync(dir)
     .filter((f) => f.endsWith('.sql'))
     .sort();
@@ -56,8 +56,14 @@ async function main(): Promise<void> {
     const sql = readFileSync(join(dir, file), 'utf8');
     const statements = sql
       .split(/;\s*$/m)
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0 && !s.startsWith('--'));
+      .map((s) =>
+        s
+          .split('\n')
+          .filter((line) => !line.trim().startsWith('--'))
+          .join('\n')
+          .trim()
+      )
+      .filter((s) => s.length > 0);
 
     for (const statement of statements) {
       await client.command({ query: statement });

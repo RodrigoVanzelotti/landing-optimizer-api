@@ -4,7 +4,7 @@ import {
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { NestFactory } from '@nestjs/core';
-import { Logger, ValidationPipe } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import helmet from '@fastify/helmet';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
@@ -23,17 +23,14 @@ async function bootstrap(): Promise<void> {
     contentSecurityPolicy: false, // API returns JSON only; CSP handled by dashboard/CDN.
   });
 
-  const dashboardOrigin = process.env['DASHBOARD_ORIGIN'] ?? 'http://localhost:3000';
+  const dashboardOrigin = (process.env['DASHBOARD_ORIGIN'] ?? 'http://localhost:3000').split(',');
   app.enableCors({
-    origin: [dashboardOrigin],
+    origin: dashboardOrigin,
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
   });
 
   app.setGlobalPrefix('v1', { exclude: ['health'] });
-  app.useGlobalPipes(
-    new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }),
-  );
   app.useGlobalFilters(new AllExceptionsFilter());
   app.enableShutdownHooks();
 
