@@ -1,0 +1,241 @@
+{
+  "info": {
+    "_postman_id": "f8da9d53-4ce5-4ee9-bf08-9e1af6e0e31b",
+    "name": "Local Demo Site Setup",
+    "description": "Registers a demo user, creates a site, and adds an allowed origin. The collection automatically stores the access token, site ID, ingest key, and public key as collection variables.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "const portSeed = pm.collectionVariables.get('port_seed');",
+          "pm.collectionVariables.set('email', `demo+${portSeed}@example.com`);"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "port_seed",
+      "value": "3005",
+      "type": "string"
+    },
+    {
+      "key": "api",
+      "value": "http://localhost:3001/v1",
+      "type": "string"
+    },
+    {
+      "key": "email",
+      "value": "demo+3005@example.com",
+      "type": "string"
+    },
+    {
+      "key": "accessToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "siteId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "ingestKey",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "publicKey",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Register Demo User",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Registration succeeded', function () {",
+              "    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+              "});",
+              "",
+              "const response = pm.response.json();",
+              "pm.expect(response).to.have.property('accessToken');",
+              "pm.collectionVariables.set('accessToken', response.accessToken);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"email\": \"{{email}}\",\n    \"password\": \"Password123!\",\n    \"tenantName\": \"Demo Tenant Workspace\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{api}}/auth/register",
+          "host": [
+            "{{api}}"
+          ],
+          "path": [
+            "auth",
+            "register"
+          ]
+        },
+        "description": "Registers the demo account and stores `accessToken` as a collection variable."
+      },
+      "response": []
+    },
+    {
+      "name": "2. Create Demo Site",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Site creation succeeded', function () {",
+              "    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+              "});",
+              "",
+              "const response = pm.response.json();",
+              "pm.expect(response).to.have.property('id');",
+              "pm.expect(response).to.have.property('ingestKey');",
+              "pm.expect(response).to.have.property('publicKey');",
+              "",
+              "pm.collectionVariables.set('siteId', response.id);",
+              "pm.collectionVariables.set('ingestKey', response.ingestKey);",
+              "pm.collectionVariables.set('publicKey', response.publicKey);",
+              "",
+              "console.log(`SITE_ID=${response.id}`);",
+              "console.log(`INGEST_KEY=${response.ingestKey}`);",
+              "console.log(`PUBLIC_KEY=${response.publicKey}`);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{accessToken}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"name\": \"Demo Site\",\n    \"primaryDomain\": \"localhost:{{port_seed}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{api}}/sites",
+          "host": [
+            "{{api}}"
+          ],
+          "path": [
+            "sites"
+          ]
+        },
+        "description": "Creates the demo site using the registration token. Stores `siteId`, `ingestKey`, and `publicKey` as collection variables."
+      },
+      "response": []
+    },
+    {
+      "name": "3. Add Localhost Origin",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Origin creation succeeded', function () {",
+              "    pm.expect(pm.response.code).to.be.oneOf([200, 201, 204]);",
+              "});",
+              "",
+              "console.log(`SITE_ID=${pm.collectionVariables.get('siteId')}`);",
+              "console.log(`INGEST_KEY=${pm.collectionVariables.get('ingestKey')}`);",
+              "console.log(`PUBLIC_KEY=${pm.collectionVariables.get('publicKey')}`);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{accessToken}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"origin\": \"http://localhost:{{port_seed}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{api}}/sites/{{siteId}}/origins",
+          "host": [
+            "{{api}}"
+          ],
+          "path": [
+            "sites",
+            "{{siteId}}",
+            "origins"
+          ]
+        },
+        "description": "Adds the localhost origin to the newly created site."
+      },
+      "response": []
+    }
+  ]
+}
