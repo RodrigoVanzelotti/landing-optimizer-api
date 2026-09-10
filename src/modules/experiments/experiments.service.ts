@@ -36,6 +36,9 @@ export class ExperimentsService {
 
   async create(user: AuthUser, dto: CreateExperimentDto): Promise<Experiment> {
     await this.requireSite(user.tenantId, dto.siteId);
+    if (dto.primaryGoalId) {
+      await this.requireGoalForSite(dto.siteId, dto.primaryGoalId);
+    }
     const id = newId();
     const riskScore = computeRiskScore(dto);
 
@@ -285,6 +288,15 @@ export class ExperimentsService {
     const site = await this.prisma.site.findUnique({ where: { id: siteId } });
     if (!site) throw new BadRequestException('Unknown site');
     if (site.tenantId !== tenantId) throw new ForbiddenException('Cross-tenant access');
+  }
+
+  /** Ensures a referenced conversion goal exists and belongs to the same site. */
+  private async requireGoalForSite(siteId: string, goalId: string): Promise<void> {
+    const goal = await this.prisma.conversionGoal.findFirst({
+      where: { id: goalId, siteId },
+      select: { id: true },
+    });
+    if (!goal) throw new BadRequestException('Unknown conversion goal for this site');
   }
 
   private async record(

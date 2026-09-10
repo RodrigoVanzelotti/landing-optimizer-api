@@ -16,6 +16,10 @@ import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { Public } from '../../common/auth/public.decorator';
 import { SiteConfigService } from '../sites/site-config.service';
 import type { Envelope } from './event-scrub';
+import { requestIdOf, type RequestContext } from '../../common/logging/request-context';
+import { Logger } from '../../common/logging/logger';
+
+const logger = Logger('EventsController');
 
 /**
  * Public edge surface consumed by the snippet. No authentication — protected by
@@ -34,14 +38,27 @@ export class EventsController {
   @HttpCode(202)
   async ingest(
     @Body(new ZodValidationPipe(EnvelopeSchema)) envelope: Envelope,
-    @Req() req: FastifyRequest,
+    @Req() req: RequestContext,
     @Res({ passthrough: true }) res: FastifyReply,
   ): Promise<void> {
     const origin = headerOf(req, 'origin') ?? headerOf(req, 'referer');
     const ip = clientIp(req);
     const result = await this.events.ingest(envelope, origin, ip);
-    if (result === 'unauthorized') void res.status(403);
-    else if (result === 'rate_limited') void res.status(429);
+    if (result === 'unauthorized') {
+      logger.warn('ingest_rejected', {
+        site_id: envelope.siteId,
+        reason: 'unauthorized',
+        request_id: requestIdOf(req),
+      });
+      void res.status(403);
+    } else if (result === 'rate_limited') {
+      logger.warn('ingest_rejected', {
+        site_id: envelope.siteId,
+        reason: 'rate_limited',
+        request_id: requestIdOf(req),
+      });
+      void res.status(429);
+    }
     // 'ok' keeps the 202 default.
   }
 

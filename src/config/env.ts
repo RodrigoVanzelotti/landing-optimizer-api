@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { configureLogger, Logger } from '../common/logging/logger';
+
+const logger = Logger('Environment');
 
 /**
  * Environment validation. The app refuses to boot with an invalid config,
@@ -7,7 +10,9 @@ import { z } from 'zod';
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3001),
-  LOG_LEVEL: z.string().default('info'),
+  LOG_LEVEL: z
+    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'verbose', 'log'])
+    .default('info'),
 
   DATABASE_URL: z.string().url(),
 
@@ -40,8 +45,12 @@ export type AppEnv = z.infer<typeof EnvSchema>;
 export function validateEnv(raw: Record<string, unknown>): AppEnv {
   const parsed = EnvSchema.safeParse(raw);
   if (!parsed.success) {
-    console.error('Invalid environment configuration:', parsed.error.flatten().fieldErrors);
+    logger.error('configuration_invalid', {
+      reason: 'validation_error',
+      fields: parsed.error.flatten().fieldErrors,
+    });
     throw new Error('Invalid environment configuration');
   }
+  configureLogger(parsed.data.LOG_LEVEL);
   return parsed.data;
 }

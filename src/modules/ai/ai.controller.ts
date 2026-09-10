@@ -1,8 +1,9 @@
-import { Controller, Get, Param, Post } from '@nestjs/common';
+import { Controller, Get, Param, Post, Req } from '@nestjs/common';
 import { AiService } from './ai.service';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { Roles } from '../../common/auth/roles.decorator';
 import type { AuthUser } from '../../common/auth/auth.types';
+import { requestIdOf, type RequestContext } from '../../common/logging/request-context';
 
 @Controller()
 export class AiController {
@@ -10,8 +11,12 @@ export class AiController {
 
   @Post('sites/:id/ai/analyze')
   @Roles('editor')
-  analyze(@CurrentUser() user: AuthUser, @Param('id') id: string) {
-    return this.ai.analyze(user, id);
+  analyze(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Req() request: RequestContext,
+  ) {
+    return this.ai.analyze(user, id, requestIdOf(request));
   }
 
   @Get('sites/:id/ai/suggestions')

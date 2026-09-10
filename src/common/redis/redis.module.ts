@@ -1,13 +1,16 @@
 import {
   Global,
   Injectable,
-  Logger,
   Module,
   OnModuleDestroy,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import type { AppEnv } from '../../config/env';
+import { safeReason } from '../logging/request-context';
+import { Logger } from '../logging/logger';
+
+const logger = Logger('RedisService');
 
 /**
  * Thin Redis wrapper used for signed-config caching and token-bucket rate
@@ -15,7 +18,6 @@ import type { AppEnv } from '../../config/env';
  */
 @Injectable()
 export class RedisService implements OnModuleDestroy {
-  private readonly logger = new Logger(RedisService.name);
   readonly client: Redis;
 
   constructor(config: ConfigService<AppEnv, true>) {
@@ -24,7 +26,12 @@ export class RedisService implements OnModuleDestroy {
       maxRetriesPerRequest: 2,
       enableReadyCheck: true,
     });
-    this.client.on('error', (err) => this.logger.warn(`Redis error: ${err.message}`));
+    this.client.on('error', (err) =>
+      logger.warn('dependency_error', {
+        dependency: 'redis',
+        reason: safeReason(err),
+      }),
+    );
   }
 
   async get(key: string): Promise<string | null> {

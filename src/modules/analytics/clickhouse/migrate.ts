@@ -8,6 +8,10 @@
 import { createClient } from '@clickhouse/client';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { Logger } from '../../../common/logging/logger';
+import { safeReason } from '../../../common/logging/request-context';
+
+const logger = Logger('ClickHouseMigration');
 
 async function main(): Promise<void> {
   const database = process.env['CLICKHOUSE_DB'] ?? 'landing_optimizer';
@@ -50,7 +54,7 @@ async function main(): Promise<void> {
 
   for (const file of files) {
     if (applied.has(file)) {
-      console.log(`skip  ${file}`);
+      logger.info('migration_skipped', { database: 'clickhouse', migration: file });
       continue;
     }
     const sql = readFileSync(join(dir, file), 'utf8');
@@ -73,14 +77,14 @@ async function main(): Promise<void> {
       values: [{ name: file }],
       format: 'JSONEachRow',
     });
-    console.log(`apply ${file}`);
+    logger.info('migration_applied', { database: 'clickhouse', migration: file });
   }
 
   await client.close();
-  console.log('ClickHouse migrations complete');
+  logger.info('migration_completed', { database: 'clickhouse', migrations: files.length });
 }
 
 main().catch((err) => {
-  console.error(err);
+  logger.error('migration_failed', { database: 'clickhouse', reason: safeReason(err) });
   process.exit(1);
 });

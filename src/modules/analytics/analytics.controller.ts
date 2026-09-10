@@ -30,6 +30,26 @@ export class AnalyticsController {
     return this.analytics.sections(user.tenantId, siteId);
   }
 
+  @Get('heatmap')
+  heatmap(
+    @CurrentUser() user: AuthUser,
+    @Query('siteId') siteId: string,
+    @Query('path') path?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const now = new Date();
+    const fromDate = from ?? new Date(now.getTime() - 30 * 864e5).toISOString();
+    const toDate = to ?? now.toISOString();
+    return this.analytics.heatmap(
+      user.tenantId,
+      siteId,
+      path && path.length > 0 ? path.slice(0, 512) : '/',
+      fmt(fromDate),
+      fmt(toDate),
+    );
+  }
+
   @Get('experiments/:id/results')
   results(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.analytics.experimentResults(user.tenantId, id);

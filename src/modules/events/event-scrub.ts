@@ -15,6 +15,7 @@ export const EVENT_NAMES = [
   'form_start',
   'form_submit',
   'section_view',
+  'hover',
   'dwell',
   'dropoff',
   'exposure',
@@ -104,4 +105,68 @@ export function sanitizePath(path: string): string {
   if (q >= 0) end = Math.min(end, q);
   if (h >= 0) end = Math.min(end, h);
   return path.slice(0, end).slice(0, 512) || '/';
+}
+
+/**
+ * Server-side mirror of the SDK selector allowlist: only tag/#id/.class chains
+ * with descendant/>/+/~ combinators. Blocks attribute selectors (the value
+ * exfiltration vector), pseudo-classes, and anything PII-shaped. Returns ''
+ * for anything unsafe so an unsafe selector is dropped, never stored.
+ */
+const SAFE_SELECTOR =
+  /^([a-zA-Z][\w-]*|\*|#[a-zA-Z][\w-]*|\.[a-zA-Z_][\w-]*)((\.[a-zA-Z_][\w-]*)|(:nth-of-type\(\d{1,3}\)))*(\s*[>+~]?\s*([a-zA-Z][\w-]*|\*|#[a-zA-Z][\w-]*|\.[a-zA-Z_][\w-]*)((\.[a-zA-Z_][\w-]*)|(:nth-of-type\(\d{1,3}\)))*)*$/;
+
+export function sanitizeSelector(sel: string | undefined): string {
+  if (!sel) return '';
+  const trimmed = sel.trim().slice(0, 256);
+  if (!trimmed || looksLikePii(trimmed)) return '';
+  return SAFE_SELECTOR.test(trimmed) ? trimmed : '';
+}
+
+/**
+ * Structural page-map payload carried in the `p` of a `page_map` event. This
+ * bypasses `scrubProps` (which intentionally drops nested objects) and is
+ * validated with its own strict schema, then persisted to Postgres — it is
+ * structural site metadata, not behavioral analytics.
+ */
+const PageMapNodeSchema = z.object({
+  role: z.string().min(1).max(24),
+  selector: z.string().min(1).max(256),
+  tag: z.string().min(1).max(24),
+  text: z.string().max(120).optional(),
+  textHash: z.number().int().optional(),
+});
+
+export const PageMapPayloadSchema = z.object({
+  path: z.string().max(512),
+  counts: z.record(z.number().int().nonnegative()).optional(),
+  nodes: z.array(PageMapNodeSchema).max(60),
+});
+export type PageMapPayload = z.infer<typeof PageMapPayloadSchema>;
+
+/**
+ * Validate + sanitize a page_map payload. Nodes with unsafe selectors or
+ * PII-shaped text are dropped rather than rejected wholesale.
+ */
+export function parsePageMapPayload(p: unknown): PageMapPayload | null {
+  const parsed = PageMapPayloadSchema.safeParse(p);
+  if (!parsed.success) return null;
+  const nodes = parsed.data.nodes.flatMap((node) => {
+    const selector = sanitizeSelector(node.selector);
+    if (!selector) return [];
+    const clean: PageMapPayload['nodes'][number] = {
+      role: node.role,
+      selector,
+      tag: node.tag,
+    };
+    if (node.text !== undefined && !looksLikePii(node.text)) clean.text = node.text;
+    if (node.textHash !== undefined) clean.textHash = node.textHash;
+    return [clean];
+  });
+  if (nodes.length === 0) return null;
+  return {
+    path: sanitizePath(parsed.data.path),
+    counts: parsed.data.counts ?? {},
+    nodes,
+  };
 }

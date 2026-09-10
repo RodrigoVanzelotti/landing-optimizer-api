@@ -1,6 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { safeReason } from '../../common/logging/request-context';
+import { Logger } from '../../common/logging/logger';
 import type { AppEnv } from '../../config/env';
+
+const logger = Logger('AiClient');
 
 export interface AnalyzeInput {
   siteId: string;
@@ -33,7 +37,6 @@ export interface AnalyzeResult {
  */
 @Injectable()
 export class AiClient {
-  private readonly logger = new Logger(AiClient.name);
   private readonly baseUrl: string;
   private readonly token: string;
 
@@ -42,24 +45,39 @@ export class AiClient {
     this.token = config.get('AI_SERVICE_TOKEN', { infer: true });
   }
 
-  async analyze(input: AnalyzeInput): Promise<AnalyzeResult | null> {
+  async analyze(input: AnalyzeInput, requestId?: string): Promise<AnalyzeResult | null> {
     try {
       const res = await fetch(`${this.baseUrl}/internal/analyze`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.token}`,
+          ...(requestId ? { 'X-Request-ID': requestId } : {}),
         },
         body: JSON.stringify(input),
         signal: AbortSignal.timeout(20000),
       });
       if (!res.ok) {
-        this.logger.warn(`AI analyze returned ${res.status}`);
+        logger.warn('dependency_request_failed', {
+          dependency: 'ai',
+          operation: 'analyze',
+          site_id: input.siteId,
+          status: res.status,
+          reason: 'upstream_error',
+          request_id: requestId ?? null,
+        });
         return null;
       }
       return (await res.json()) as AnalyzeResult;
     } catch (err) {
-      this.logger.warn(`AI analyze failed: ${(err as Error).message}`);
+      logger.warn('dependency_request_failed', {
+        dependency: 'ai',
+        operation: 'analyze',
+        site_id: input.siteId,
+        status: 'unavailable',
+        reason: safeReason(err),
+        request_id: requestId ?? null,
+      });
       return null;
     }
   }

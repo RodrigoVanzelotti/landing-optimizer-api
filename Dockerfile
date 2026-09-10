@@ -1,13 +1,24 @@
 # syntax=docker/dockerfile:1
-# --- build stage ---
-FROM node:20-slim AS build
+# --- dependency stage ---
+FROM node:20-slim AS dependencies
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
 COPY prisma ./prisma
 RUN npm ci
+RUN npx prisma generate
+
+# --- local development/watch stage ---
+FROM dependencies AS development
+ENV NODE_ENV=development
+ENV TSC_WATCHFILE=DynamicPriorityPolling
 COPY . .
-RUN npx prisma generate && npm run build
+EXPOSE 3001
+CMD ["npm", "run", "start:dev"]
+
+# --- build stage ---
+FROM development AS build
+RUN npm run build
 
 # --- runtime stage ---
 FROM node:20-slim AS runtime

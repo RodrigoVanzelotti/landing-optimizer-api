@@ -1,10 +1,12 @@
 import {
   Injectable,
-  Logger,
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
 import { Prisma, PrismaClient } from '@prisma/client';
+import { Logger } from '../logging/logger';
+
+const logger = Logger('PrismaService');
 
 /**
  * Prisma client wrapper. Sets the per-request `app.tenant_id` GUC used by
@@ -15,11 +17,9 @@ export class PrismaService
   extends PrismaClient
   implements OnModuleInit, OnModuleDestroy
 {
-  private readonly logger = new Logger(PrismaService.name);
-
   async onModuleInit(): Promise<void> {
     await this.$connect();
-    this.logger.log('Connected to PostgreSQL');
+    logger.info('dependency_connected', { dependency: 'postgresql' });
   }
 
   async onModuleDestroy(): Promise<void> {

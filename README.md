@@ -20,6 +20,20 @@ npm run clickhouse:migrate      # requires ClickHouse
 npm run start:dev
 ```
 
+### Docker watch mode
+From the sibling `landing-optimizer-infra` repo (Docker Compose 2.23+):
+
+```bash
+make watch
+# Windows PowerShell / without make:
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.watch.yml up --build --watch
+```
+
+The API uses the Dockerfile `development` target and `nest start --watch`.
+Changes under `src/` synchronize immediately; TypeScript/Nest config changes
+restart the service; Prisma/ClickHouse migration changes synchronize and rerun
+idempotent deploy commands; package and Dockerfile changes rebuild the image.
+
 ## Key endpoints
 See [../landing-optimizer-infra/docs/API_CONTRACTS.md](../landing-optimizer-infra/docs/API_CONTRACTS.md).
 - `POST /v1/auth/register|login` — operator auth

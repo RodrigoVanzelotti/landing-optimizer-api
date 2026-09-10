@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   createCipheriv,
@@ -11,6 +11,9 @@ import {
 } from 'node:crypto';
 import type { AppEnv } from '../../config/env';
 import { canonicalJson } from './canonical-json';
+import { Logger } from '../logging/logger';
+
+const logger = Logger('CryptoService');
 
 export interface SiteKeyPair {
   /** base64 raw Ed25519 public key (32 bytes) — embedded in the snippet. */
@@ -27,7 +30,6 @@ export interface SiteKeyPair {
  */
 @Injectable()
 export class CryptoService {
-  private readonly logger = new Logger(CryptoService.name);
   private readonly encKey: Buffer;
 
   constructor(config: ConfigService<AppEnv, true>) {
@@ -40,7 +42,10 @@ export class CryptoService {
     } else {
       // Development fallback only — never hit in production (env is validated
       // and this key should be provided by KMS/secrets manager).
-      this.logger.warn('CONFIG_ENCRYPTION_KEY not set — using insecure dev key');
+      logger.warn('configuration_warning', {
+        setting: 'CONFIG_ENCRYPTION_KEY',
+        reason: 'using_insecure_development_fallback',
+      });
       this.encKey = scryptSync('dev-insecure-key', 'lo-dev-salt', 32);
     }
   }

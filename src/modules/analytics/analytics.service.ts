@@ -11,6 +11,21 @@ export interface OverviewResult {
   formSubmits: number;
 }
 
+export interface HeatmapElement {
+  selector: string;
+  ctaClicks: number;
+  deadClicks: number;
+  rageClicks: number;
+  hoverMs: number;
+  hoverEvents: number;
+}
+
+export interface HeatmapResult {
+  pageViews: number;
+  elements: HeatmapElement[];
+  scrollDepth: { bucket: number; reached: number; pct: number }[];
+}
+
 /**
  * Read-only analytics over ClickHouse. Every query is scoped by tenant_id and
  * site_id injected server-side — the client can never supply those directly.
@@ -92,6 +107,79 @@ export class AnalyticsService {
       rageClicks: Number(r.rage_clicks),
       dwellMs: Number(r.dwell_ms_total),
     }));
+  }
+
+  /**
+   * Element-anchored behavior metrics for one page path, powering the
+   * dashboard heatmap layers (clicks, hover attention, frustration, scroll
+   * depth). Selectors were sanitized at ingestion; they key into the geometry
+   * stored with the page snapshot.
+   */
+  async heatmap(
+    tenantId: string,
+    siteId: string,
+    path: string,
+    from: string,
+    to: string,
+  ): Promise<HeatmapResult> {
+    await this.requireSite(tenantId, siteId);
+    const scope = `tenant_id = {tenantId:UUID} AND site_id = {siteId:UUID}
+         AND page_path = {path:String}
+         AND event_time BETWEEN {from:DateTime64} AND {to:DateTime64}`;
+    const params = { tenantId, siteId, path, from, to };
+
+    const [elementRows, scrollRows, viewRows] = await Promise.all([
+      this.ch.query<{
+        selector: string;
+        cta_clicks: string;
+        dead_clicks: string;
+        rage_clicks: string;
+        hover_ms: string;
+        hover_events: string;
+      }>(
+        `SELECT selector,
+                countIf(event_name = 'cta_click')  AS cta_clicks,
+                countIf(event_name = 'dead_click') AS dead_clicks,
+                countIf(event_name = 'rage_click') AS rage_clicks,
+                sumIf(dwell_ms, event_name = 'hover') AS hover_ms,
+                countIf(event_name = 'hover')      AS hover_events
+         FROM events
+         WHERE ${scope} AND selector != ''
+         GROUP BY selector
+         ORDER BY (cta_clicks + dead_clicks + rage_clicks) DESC, hover_ms DESC
+         LIMIT 200`,
+        params,
+      ),
+      this.ch.query<{ bucket: number; reached: string }>(
+        `SELECT scroll_depth AS bucket, count() AS reached
+         FROM events
+         WHERE ${scope} AND event_name = 'scroll_depth'
+         GROUP BY bucket ORDER BY bucket`,
+        params,
+      ),
+      this.ch.query<{ c: string }>(
+        `SELECT count() AS c FROM events WHERE ${scope} AND event_name = 'page_view'`,
+        params,
+      ),
+    ]);
+
+    const pageViews = Number(viewRows[0]?.c ?? 0);
+    return {
+      pageViews,
+      elements: elementRows.map((r) => ({
+        selector: r.selector,
+        ctaClicks: Number(r.cta_clicks),
+        deadClicks: Number(r.dead_clicks),
+        rageClicks: Number(r.rage_clicks),
+        hoverMs: Number(r.hover_ms),
+        hoverEvents: Number(r.hover_events),
+      })),
+      scrollDepth: scrollRows.map((r) => ({
+        bucket: Number(r.bucket),
+        reached: Number(r.reached),
+        pct: pageViews > 0 ? Number(r.reached) / pageViews : 0,
+      })),
+    };
   }
 
   async experimentResults(

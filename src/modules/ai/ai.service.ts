@@ -23,7 +23,11 @@ export class AiService {
   ) {}
 
   /** Run analysis for a site: gather metrics + guardrails, call AI, persist. */
-  async analyze(user: AuthUser, siteId: string): Promise<{ count: number; score: number }> {
+  async analyze(
+    user: AuthUser,
+    siteId: string,
+    requestId?: string,
+  ): Promise<{ count: number; score: number }> {
     const site = await this.requireSite(user.tenantId, siteId);
     const now = new Date();
     const from = new Date(now.getTime() - 30 * 864e5).toISOString();
@@ -38,12 +42,15 @@ export class AiService {
       }),
     ]);
 
-    const result = await this.ai.analyze({
-      siteId,
-      pageMap: latestMap?.map ?? { nodes: [] },
-      metrics: { overview, sections },
-      guardrails: (guardrail?.rules as Record<string, unknown>) ?? {},
-    });
+    const result = await this.ai.analyze(
+      {
+        siteId,
+        pageMap: latestMap?.map ?? { nodes: [] },
+        metrics: { overview, sections },
+        guardrails: (guardrail?.rules as Record<string, unknown>) ?? {},
+      },
+      requestId,
+    );
     if (!result) throw new ServiceUnavailableException('AI service unavailable');
 
     await this.prisma.$transaction(

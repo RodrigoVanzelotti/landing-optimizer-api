@@ -1,12 +1,15 @@
 import {
   Injectable,
-  Logger,
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createClient, type ClickHouseClient } from '@clickhouse/client';
 import type { AppEnv } from '../../../config/env';
+import { safeReason } from '../../../common/logging/request-context';
+import { Logger } from '../../../common/logging/logger';
+
+const logger = Logger('ClickHouseService');
 
 /** A single row written to the `events` table (see docs/DATABASE_SCHEMA §2.1). */
 export interface EventRow {
@@ -24,6 +27,8 @@ export interface EventRow {
   experiment_id: string;
   variant_id: string;
   section_id: string;
+  selector: string;
+  goal: string;
   scroll_depth: number;
   dwell_ms: number;
   value: number;
@@ -34,7 +39,6 @@ const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
 @Injectable()
 export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
-  private readonly logger = new Logger(ClickHouseService.name);
   private client!: ClickHouseClient;
 
   constructor(private readonly config: ConfigService<AppEnv, true>) {}
@@ -66,7 +70,11 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
         format: 'JSONEachRow',
       });
     } catch (err) {
-      this.logger.error(`ClickHouse insert failed: ${(err as Error).message}`);
+      logger.error('dependency_error', {
+        dependency: 'clickhouse',
+        operation: 'insert_events',
+        reason: safeReason(err),
+      });
       throw err;
     }
   }

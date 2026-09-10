@@ -188,6 +188,7 @@ model Site {
   experiments Experiment[]
   guardrail   BrandGuardrail?
   pageMaps    PageMap[]
+  snapshots   PageSnapshot[]
 
   @@index([tenantId])
   @@map("site")
@@ -349,8 +350,30 @@ model PageMap {
 
   site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
 
-  @@index([siteId, urlPath])
+  @@unique([siteId, urlPath])
   @@map("page_map")
+}
+
+/// Operator-captured page screenshot + element geometry for the behavior
+/// heatmap. The image is rasterized client-side by the lo-capture bundle with
+/// form values and ignored elements stripped; `nodes` holds the document-space
+/// bounding box per page-map selector at capture time, so heat zones stay
+/// aligned with the image even if the live page changes later.
+model PageSnapshot {
+  id          String   @id
+  siteId      String   @map("site_id")
+  urlPath     String   @map("url_path")
+  width       Int
+  height      Int
+  contentType String   @map("content_type")
+  image       Bytes
+  nodes       Json     @default("[]")
+  capturedAt  DateTime @default(now()) @map("captured_at")
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([siteId, urlPath, capturedAt])
+  @@map("page_snapshot")
 }
 
 model AuditLog {
