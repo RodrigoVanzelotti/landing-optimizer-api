@@ -42,6 +42,7 @@ export class EventsService {
     envelope: Envelope,
     origin: string | undefined,
     ip: string | undefined,
+    requestId?: string,
   ): Promise<'ok' | 'unauthorized' | 'rate_limited'> {
     const site = await this.siteAuth.resolveSite(envelope.siteId, envelope.ik);
     if (!site || !site.active) return 'unauthorized';
@@ -61,7 +62,7 @@ export class EventsService {
     const behavioral = envelope.events.filter((e) => e.n !== 'page_map');
 
     if (pageMaps.length > 0) {
-      await this.persistPageMap(site.siteId, pageMaps);
+      await this.persistPageMap(site.siteId, pageMaps, requestId);
     }
     if (behavioral.length === 0) return 'ok';
 
@@ -92,12 +93,15 @@ export class EventsService {
 
     try {
       await this.ch.insertEvents(rows);
-    } catch {
-      // Never surface storage errors to the browser; drop the batch.
-      logger.warn('event_batch_dropped', {
+    } catch (err) {
+      // Never surface storage errors to the browser; drop the batch. This is
+      // the ONLY log record for the incident (ClickHouseService does not log
+      // insert errors), so it carries every fact needed to trace it.
+      logger.exception('event_batch_dropped', err, {
+        dependency: 'clickhouse',
         site_id: site.siteId,
         events: rows.length,
-        reason: 'clickhouse_insert_failed',
+        request_id: requestId ?? null,
       });
     }
     return 'ok';
@@ -108,7 +112,11 @@ export class EventsService {
    * site so a hot page cannot amplify into a Postgres write storm; the map
    * only changes when the page does, so dropped duplicates cost nothing.
    */
-  private async persistPageMap(siteId: string, events: WireEvent[]): Promise<void> {
+  private async persistPageMap(
+    siteId: string,
+    events: WireEvent[],
+    requestId?: string,
+  ): Promise<void> {
     try {
       const first = events[0];
       const payload = first ? parsePageMapPayload(first.p) : null;
@@ -134,11 +142,12 @@ export class EventsService {
           capturedAt: new Date(),
         },
       });
-    } catch {
+    } catch (err) {
       // Structural persistence is best-effort; behavioral ingestion continues.
-      logger.warn('page_map_dropped', {
+      logger.exception('page_map_dropped', err, {
+        dependency: 'postgres',
         site_id: siteId,
-        reason: 'persist_failed',
+        request_id: requestId ?? null,
       });
     }
   }

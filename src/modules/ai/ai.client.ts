@@ -1,10 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { DependencyUnavailableException } from '../../common/errors/dependency-unavailable.exception';
 import { safeReason } from '../../common/logging/request-context';
-import { Logger } from '../../common/logging/logger';
 import type { AppEnv } from '../../config/env';
-
-const logger = Logger('AiClient');
 
 export interface AnalyzeInput {
   siteId: string;
@@ -32,8 +30,9 @@ export interface AnalyzeResult {
 
 /**
  * Thin client for the internal AI service (Python FastAPI). Uses a bearer
- * service token; fails soft so the dashboard degrades gracefully when the AI
- * service is unavailable.
+ * service token. Failures throw DependencyUnavailableException with the
+ * dependency facts attached — the global exception filter emits the single
+ * log record for the incident (single-record rule); this client never logs.
  */
 @Injectable()
 export class AiClient {
@@ -45,9 +44,10 @@ export class AiClient {
     this.token = config.get('AI_SERVICE_TOKEN', { infer: true });
   }
 
-  async analyze(input: AnalyzeInput, requestId?: string): Promise<AnalyzeResult | null> {
+  async analyze(input: AnalyzeInput, requestId?: string): Promise<AnalyzeResult> {
+    let res: Response;
     try {
-      const res = await fetch(`${this.baseUrl}/internal/analyze`, {
+      res = await fetch(`${this.baseUrl}/internal/analyze`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -57,28 +57,22 @@ export class AiClient {
         body: JSON.stringify(input),
         signal: AbortSignal.timeout(20000),
       });
-      if (!res.ok) {
-        logger.warn('dependency_request_failed', {
-          dependency: 'ai',
-          operation: 'analyze',
-          site_id: input.siteId,
-          status: res.status,
-          reason: 'upstream_error',
-          request_id: requestId ?? null,
-        });
-        return null;
-      }
-      return (await res.json()) as AnalyzeResult;
     } catch (err) {
-      logger.warn('dependency_request_failed', {
+      throw new DependencyUnavailableException('AI service unavailable', {
         dependency: 'ai',
         operation: 'analyze',
-        site_id: input.siteId,
-        status: 'unavailable',
         reason: safeReason(err),
-        request_id: requestId ?? null,
+        upstream_status: 'unreachable',
       });
-      return null;
     }
+    if (!res.ok) {
+      throw new DependencyUnavailableException('AI service unavailable', {
+        dependency: 'ai',
+        operation: 'analyze',
+        reason: 'upstream_error',
+        upstream_status: res.status,
+      });
+    }
+    return (await res.json()) as AnalyzeResult;
   }
 }

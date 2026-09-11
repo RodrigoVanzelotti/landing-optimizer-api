@@ -43,7 +43,7 @@ export class EventsController {
   ): Promise<void> {
     const origin = headerOf(req, 'origin') ?? headerOf(req, 'referer');
     const ip = clientIp(req);
-    const result = await this.events.ingest(envelope, origin, ip);
+    const result = await this.events.ingest(envelope, origin, ip, requestIdOf(req));
     if (result === 'unauthorized') {
       logger.warn('ingest_rejected', {
         site_id: envelope.siteId,

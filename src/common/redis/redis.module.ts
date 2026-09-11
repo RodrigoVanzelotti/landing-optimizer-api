@@ -13,6 +13,19 @@ import { Logger } from '../logging/logger';
 const logger = Logger('RedisService');
 
 /**
+ * Atomic fixed-window increment. Sets the window TTL when the key is new and
+ * self-heals any counter that lost its TTL (TTL < 0 means no expiry), so a
+ * window can never become permanent.
+ */
+const ALLOW_SCRIPT = `
+local count = redis.call('INCR', KEYS[1])
+if count == 1 or redis.call('TTL', KEYS[1]) < 0 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return count
+`;
+
+/**
  * Thin Redis wrapper used for signed-config caching and token-bucket rate
  * limiting. Fails soft: callers treat Redis outages as cache misses.
  */
@@ -61,11 +74,21 @@ export class RedisService implements OnModuleDestroy {
 
   /**
    * Fixed-window token bucket. Returns true when the request is allowed.
+   *
+   * INCR + EXPIRE run atomically in one Lua script, and a missing TTL is
+   * re-set on every call. The previous two-command version could leave the
+   * counter key immortal if the process failed between INCR and EXPIRE —
+   * after `limit` total increments the key would rate-limit its site
+   * PERMANENTLY (observed as ingestion silently stopping after a while).
    */
   async allow(key: string, limit: number, windowSeconds: number): Promise<boolean> {
     try {
-      const count = await this.client.incr(key);
-      if (count === 1) await this.client.expire(key, windowSeconds);
+      const count = (await this.client.eval(
+        ALLOW_SCRIPT,
+        1,
+        key,
+        String(windowSeconds),
+      )) as number;
       return count <= limit;
     } catch {
       return true; // fail open for availability; edge has its own limits

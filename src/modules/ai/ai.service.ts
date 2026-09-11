@@ -3,7 +3,6 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
-  ServiceUnavailableException,
 } from '@nestjs/common';
 import type { Prisma, SuggestionKind } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -42,6 +41,8 @@ export class AiService {
       }),
     ]);
 
+    // Throws DependencyUnavailableException on failure; the global exception
+    // filter logs the single record with the dependency facts attached.
     const result = await this.ai.analyze(
       {
         siteId,
@@ -51,7 +52,6 @@ export class AiService {
       },
       requestId,
     );
-    if (!result) throw new ServiceUnavailableException('AI service unavailable');
 
     await this.prisma.$transaction(
       result.suggestions.map((s) =>

@@ -14,6 +14,7 @@ import {
   safeReason,
   type RequestContext,
 } from '../logging/request-context';
+import { DependencyUnavailableException } from '../errors/dependency-unavailable.exception';
 import { Logger } from '../logging/logger';
 
 const logger = Logger('AllExceptionsFilter');
@@ -75,7 +76,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     const user = req.user;
     const reason = exceptionReason(exception, message);
-    const log = {
+    const log: Record<string, unknown> = {
       method: req.method,
       path: requestPath(req),
       status,
@@ -85,6 +86,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
       tenant_id: user?.tenantId ?? null,
       actor_user_id: user?.userId ?? null,
     };
+    // Dependency failures carry their facts on the exception (single-record
+    // rule) — merge them so this stays the one log line for the incident.
+    if (exception instanceof DependencyUnavailableException) {
+      Object.assign(log, exception.dependencyFields);
+    }
     if (status >= 500) {
       logger.exception('request_failed', exception, log);
     } else {

@@ -17,6 +17,7 @@ import { ExperimentsModule } from './modules/experiments/experiments.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { EventsModule } from './modules/events/events.module';
 import { SnapshotsModule } from './modules/snapshots/snapshots.module';
+import { JourneyModule } from './modules/journey/journey.module';
 import { AiModule } from './modules/ai/ai.module';
 import { ApprovalsModule } from './modules/approvals/approvals.module';
 import { AuditReadModule } from './modules/audit/audit.controller';
@@ -42,6 +43,7 @@ import { HealthController } from './health.controller';
     ExperimentsModule,
     EventsModule,
     SnapshotsModule,
+    JourneyModule,
     AiModule,
     ApprovalsModule,
     AuditReadModule,
