@@ -44,9 +44,16 @@ export class EventsService {
     ip: string | undefined,
     requestId?: string,
   ): Promise<'ok' | 'unauthorized' | 'rate_limited'> {
-    const site = await this.siteAuth.resolveSite(envelope.siteId, envelope.ik);
-    if (!site || !site.active) return 'unauthorized';
-    if (!this.siteAuth.originAllowed(site, origin)) return 'unauthorized';
+    const auth = await this.siteAuth.authorize(envelope.sid, envelope.ik, origin);
+    if (!auth.ok) {
+      logger.warn('ingest_rejected', {
+        site_id: envelope.siteId,
+        reason: auth.reason,
+        request_id: requestId ?? null,
+      });
+      return 'unauthorized';
+    }
+    const site = auth.site;
 
     const ipHash = this.siteAuth.hash(`${ip ?? 'unknown'}:${this.siteAuth.dailySalt()}`);
     const allowed = await this.redis.allow(
@@ -54,7 +61,14 @@ export class EventsService {
       RATE_LIMIT,
       RATE_WINDOW,
     );
-    if (!allowed) return 'rate_limited';
+    if (!allowed) {
+      logger.warn('ingest_rejected', {
+        site_id: site.siteId,
+        reason: 'rate_limited',
+        request_id: requestId ?? null,
+      });
+      return 'rate_limited';
+    }
 
     // Structural page_map events are persisted relationally, not as analytics
     // rows (their nested payload would be destroyed by scrubProps anyway).

@@ -16,11 +16,9 @@ import { Roles } from '../../common/auth/roles.decorator';
 import type { AuthUser } from '../../common/auth/auth.types';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { requestIdOf, type RequestContext } from '../../common/logging/request-context';
-import { Logger } from '../../common/logging/logger';
 import { SnapshotsService } from './snapshots.service';
 import { SnapshotEnvelopeSchema, type SnapshotEnvelope } from './snapshots.dto';
 
-const logger = Logger('SnapshotsController');
 
 /**
  * Page snapshot endpoints. `POST /v1/snapshots` is the public upload surface
@@ -41,13 +39,8 @@ export class SnapshotsController {
     @Res({ passthrough: true }) res: FastifyReply,
   ): Promise<void> {
     const origin = headerOf(req, 'origin') ?? headerOf(req, 'referer');
-    const result = await this.snapshots.ingest(envelope, origin);
+    const result = await this.snapshots.ingest(envelope, origin, requestIdOf(req));
     if (result === 'ok') return;
-    logger.warn('snapshot_rejected', {
-      site_id: envelope.siteId,
-      reason: result,
-      request_id: requestIdOf(req),
-    });
     if (result === 'unauthorized') void res.status(403);
     else if (result === 'rate_limited') void res.status(429);
     else void res.status(400);

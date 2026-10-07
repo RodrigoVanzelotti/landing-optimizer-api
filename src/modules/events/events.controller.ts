@@ -17,9 +17,6 @@ import { Public } from '../../common/auth/public.decorator';
 import { SiteConfigService } from '../sites/site-config.service';
 import type { Envelope } from './event-scrub';
 import { requestIdOf, type RequestContext } from '../../common/logging/request-context';
-import { Logger } from '../../common/logging/logger';
-
-const logger = Logger('EventsController');
 
 /**
  * Public edge surface consumed by the snippet. No authentication — protected by
@@ -45,18 +42,9 @@ export class EventsController {
     const ip = clientIp(req);
     const result = await this.events.ingest(envelope, origin, ip, requestIdOf(req));
     if (result === 'unauthorized') {
-      logger.warn('ingest_rejected', {
-        site_id: envelope.siteId,
-        reason: 'unauthorized',
-        request_id: requestIdOf(req),
-      });
       void res.status(403);
-    } else if (result === 'rate_limited') {
-      logger.warn('ingest_rejected', {
-        site_id: envelope.siteId,
-        reason: 'rate_limited',
-        request_id: requestIdOf(req),
-      });
+    }
+    else if (result === 'rate_limited') {
       void res.status(429);
     }
     // 'ok' keeps the 202 default.

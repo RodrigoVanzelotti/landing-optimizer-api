@@ -45,23 +45,33 @@ export class SnapshotsService {
   async ingest(
     envelope: SnapshotEnvelope,
     origin: string | undefined,
+    requestId?: string,
   ): Promise<'ok' | 'unauthorized' | 'rate_limited' | 'invalid'> {
-    const site = await this.siteAuth.resolveSite(envelope.siteId, envelope.ik);
-    if (!site || !site.active) return 'unauthorized';
-    if (!this.siteAuth.originAllowed(site, origin)) return 'unauthorized';
+    const reject = <T extends 'unauthorized' | 'rate_limited' | 'invalid'>(status: T, reason: string): T => {
+      logger.warn('snapshot_rejected', {
+        site_id: envelope.siteId,
+        reason,
+        request_id: requestId ?? null,
+      });
+      return status;
+    };
+
+    const auth = await this.siteAuth.authorize(envelope.siteId, envelope.ik, origin);
+    if (!auth.ok) return reject('unauthorized', auth.reason);
+    const site = auth.site;
 
     const allowed = await this.redis.allow(`rl:snap:${site.siteId}`, RATE_LIMIT, RATE_WINDOW);
-    if (!allowed) return 'rate_limited';
+    if (!allowed) return reject('rate_limited', 'rate_limited');
 
     let image: Buffer;
     try {
       image = Buffer.from(envelope.image, 'base64');
     } catch {
-      return 'invalid';
+      return reject('invalid', 'invalid_base64');
     }
-    if (image.length === 0 || image.length > MAX_IMAGE_BYTES) return 'invalid';
-    if (!matchesContentType(image, envelope.contentType)) return 'invalid';
-
+    if (image.length === 0 || image.length > MAX_IMAGE_BYTES) return reject('invalid', 'empty_over_oversized_image');
+    if (!matchesContentType(image, envelope.contentType)) return reject('invalid', 'content_type_mismatch');
+    if (!image.length) return reject('invalid', 'empty_image');
     // Unsafe selectors are dropped node-by-node, never stored.
     const nodes: SnapshotNode[] = envelope.nodes.flatMap((n) => {
       const selector = sanitizeSelector(n.selector);
