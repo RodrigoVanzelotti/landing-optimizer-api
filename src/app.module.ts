@@ -21,6 +21,7 @@ import { AiModule } from './modules/ai/ai.module';
 import { ApprovalsModule } from './modules/approvals/approvals.module';
 import { AuditReadModule } from './modules/audit/audit.controller';
 import { HealthController } from './health.controller';
+import { SdkController } from './sdk.controller';
 
 @Module({
   imports: [
@@ -46,7 +47,7 @@ import { HealthController } from './health.controller';
     ApprovalsModule,
     AuditReadModule,
   ],
-  controllers: [HealthController],
+  controllers: [HealthController, SdkController],
   providers: [
     // Authenticate every route by default; opt out with @Public().
     { provide: APP_GUARD, useClass: JwtAuthGuard },

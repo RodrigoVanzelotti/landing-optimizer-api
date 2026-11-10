@@ -109,18 +109,23 @@ export function sanitizePath(path: string): string {
 
 /**
  * Server-side mirror of the SDK selector allowlist: only tag/#id/.class chains
- * with descendant/>/+/~ combinators. Blocks attribute selectors (the value
- * exfiltration vector), pseudo-classes, and anything PII-shaped. Returns ''
+ * with descendant/>/+/~ combinators, plus standalone validated data-lo-id
+ * selectors. Other attributes, pseudo-classes and PII-shaped values stay blocked. Returns ''
  * for anything unsafe so an unsafe selector is dropped, never stored.
  */
 const SAFE_SELECTOR =
   /^([a-zA-Z][\w-]*|\*|#[a-zA-Z][\w-]*|\.[a-zA-Z_][\w-]*)((\.[a-zA-Z_][\w-]*)|(:nth-of-type\(\d{1,3}\)))*(\s*[>+~]?\s*([a-zA-Z][\w-]*|\*|#[a-zA-Z][\w-]*|\.[a-zA-Z_][\w-]*)((\.[a-zA-Z_][\w-]*)|(:nth-of-type\(\d{1,3}\)))*)*$/;
 
+/** Only static instrumentation IDs; never general attribute-value selectors. */
+export function isManualSelector(selector: string): boolean {
+  return /^\[data-lo-id="[a-z][a-z0-9-]{0,63}"\]$/.test(selector) && !looksLikePii(selector);
+}
+
 export function sanitizeSelector(sel: string | undefined): string {
   if (!sel) return '';
   const trimmed = sel.trim().slice(0, 256);
   if (!trimmed || looksLikePii(trimmed)) return '';
-  return SAFE_SELECTOR.test(trimmed) ? trimmed : '';
+  return isManualSelector(trimmed) || SAFE_SELECTOR.test(trimmed) ? trimmed : '';
 }
 
 /**

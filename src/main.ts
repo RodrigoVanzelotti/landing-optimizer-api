@@ -15,11 +15,11 @@ const logger = Logger('Bootstrap');
 async function bootstrap(): Promise<void> {
   const adapter = new FastifyAdapter({
     trustProxy: true,
-    // 6 MB — sized for POST /v1/snapshots (base64 page screenshot, ≤3 MB
-    // decoded, enforced in SnapshotsService). Event batches stay tiny and are
-    // bounded by EnvelopeSchema; the production edge Worker enforces the
-    // 32 KB event-body limit before traffic reaches this API.
+    // Snapshots need 6 MB; event ingestion gets its own smaller limit below.
     bodyLimit: 6 * 1024 * 1024,
+  });
+  adapter.getInstance().addHook('onRoute', (route) => {
+    if (route.url === '/v1/events') route.bodyLimit = 32 * 1024;
   });
 
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter, {
@@ -30,10 +30,10 @@ async function bootstrap(): Promise<void> {
     contentSecurityPolicy: false, // API returns JSON only; CSP handled by dashboard/CDN.
   });
 
-  const dashboardOrigin = (process.env['DASHBOARD_ORIGIN'] ?? 'http://localhost:3000').split(',');
   app.enableCors({
-    origin: dashboardOrigin,
-    credentials: true,
+    // Public snippets run on customer origins; control-plane routes require bearer JWTs.
+    origin: true,
+    credentials: false,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
 

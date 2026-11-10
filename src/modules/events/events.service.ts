@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisService } from '../../common/redis/redis.module';
 import { newId } from '../../common/crypto/ids';
@@ -25,9 +25,9 @@ const PAGE_MAP_WINDOW = 3600;
 /**
  * Development/edge-fallback ingestion. Validates the ingest key + origin, rate
  * limits, scrubs PII, pseudonymizes the session id with a daily salt, and
- * writes rows to ClickHouse. Structural `page_map` events are split off and
+ * writes rows to the configured analytics store. Structural `page_map` events are split off and
  * persisted to Postgres (they describe the page, not visitor behavior).
- * In production a Cloudflare Worker fronts this path.
+ * The API can ingest directly without an edge Worker.
  */
 @Injectable()
 export class EventsService {
@@ -93,12 +93,12 @@ export class EventsService {
     try {
       await this.ch.insertEvents(rows);
     } catch {
-      // Never surface storage errors to the browser; drop the batch.
       logger.warn('event_batch_dropped', {
         site_id: site.siteId,
         events: rows.length,
-        reason: 'clickhouse_insert_failed',
+        reason: 'event_storage_insert_failed',
       });
+      throw new ServiceUnavailableException('Event storage unavailable');
     }
     return 'ok';
   }

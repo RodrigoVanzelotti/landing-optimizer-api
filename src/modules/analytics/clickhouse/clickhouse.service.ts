@@ -8,6 +8,8 @@ import { createClient, type ClickHouseClient } from '@clickhouse/client';
 import type { AppEnv } from '../../../config/env';
 import { safeReason } from '../../../common/logging/request-context';
 import { Logger } from '../../../common/logging/logger';
+import { PrismaService } from '../../../common/prisma/prisma.service';
+import { postgresQuery } from './postgres-query';
 
 const logger = Logger('ClickHouseService');
 
@@ -41,9 +43,14 @@ const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
   private client!: ClickHouseClient;
 
-  constructor(private readonly config: ConfigService<AppEnv, true>) {}
+  constructor(private readonly config: ConfigService<AppEnv, true>, private readonly prisma: PrismaService) {}
+
+  private get postgres(): boolean {
+    return this.config.get('ANALYTICS_BACKEND', { infer: true }) === 'postgres';
+  }
 
   onModuleInit(): void {
+    if (this.postgres) return;
     this.client = createClient({
       url: this.config.get('CLICKHOUSE_URL', { infer: true }),
       username: this.config.get('CLICKHOUSE_USER', { infer: true }),
@@ -63,6 +70,11 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
 
   async insertEvents(rows: EventRow[]): Promise<void> {
     if (rows.length === 0) return;
+    if (this.postgres) {
+      await this.prisma.$executeRaw`
+        INSERT INTO events SELECT * FROM jsonb_populate_recordset(NULL::events, ${JSON.stringify(rows)}::jsonb)`;
+      return;
+    }
     try {
       await this.client.insert({
         table: 'events',
@@ -80,6 +92,10 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
   }
 
   async query<T>(sql: string, params: Record<string, unknown> = {}): Promise<T[]> {
+    if (this.postgres) {
+      const query = postgresQuery(sql, params);
+      return this.prisma.$queryRawUnsafe<T[]>(query.sql, ...query.values);
+    }
     const result = await this.client.query({
       query: sql,
       query_params: params,

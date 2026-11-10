@@ -11,6 +11,10 @@ signed site config, analytics reads (ClickHouse), and AI orchestration.
 - JWT auth (short-lived) + role guards; Zod validation everywhere
 
 ## Setup
+
+For the simplified Google Cloud V1 (Cloud Run + PostgreSQL, without Redis or
+ClickHouse), see [the deployment guide](../landing-optimizer-infra/gcp-v1/README.md).
+
 ```bash
 cp .env.example .env
 npm install

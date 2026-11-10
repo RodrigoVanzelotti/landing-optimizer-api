@@ -16,12 +16,13 @@ const EnvSchema = z.object({
 
   DATABASE_URL: z.string().url(),
 
-  CLICKHOUSE_URL: z.string().url(),
+  ANALYTICS_BACKEND: z.enum(['clickhouse', 'postgres']).default('clickhouse'),
+  CLICKHOUSE_URL: z.string().url().default('http://localhost:8123'),
   CLICKHOUSE_DB: z.string().default('landing_optimizer'),
   CLICKHOUSE_USER: z.string().default('default'),
   CLICKHOUSE_PASSWORD: z.string().default(''),
 
-  REDIS_URL: z.string().url(),
+  REDIS_URL: z.string().url().optional(),
 
   JWT_SECRET: z.string().min(16),
   JWT_ACCESS_TTL: z.coerce.number().int().positive().default(900),

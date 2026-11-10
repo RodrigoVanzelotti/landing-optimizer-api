@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isManualSelector } from '../events/event-scrub';
 
 const ChangeOpEnum = z.enum([
   'set_text',
@@ -19,7 +20,7 @@ const VariantChangeSchema = z.object({
     .string()
     .min(1)
     .max(256)
-    .refine((s) => !/[[\](){}<'"`;:,]/.test(s) && SAFE_SELECTOR.test(s.trim()), {
+    .refine((s) => isManualSelector(s.trim()) || (!/[[\](){}<'"`;:,]/.test(s) && SAFE_SELECTOR.test(s.trim())), {
       message: 'unsafe or unsupported selector',
     }),
   op: ChangeOpEnum,

@@ -109,12 +109,13 @@ model Tenant {
   createdAt  DateTime @default(now()) @map("created_at")
   updatedAt  DateTime @updatedAt @map("updated_at")
 
-  memberships   UserMembership[]
-  sites         Site[]
-  apiKeys       ApiKey[]
-  experiments   Experiment[]
-  auditLogs     AuditLog[]
-  aiSuggestions AiSuggestion[]
+  memberships     UserMembership[]
+  sites           Site[]
+  apiKeys         ApiKey[]
+  experiments     Experiment[]
+  auditLogs       AuditLog[]
+  aiSuggestions   AiSuggestion[]
+  analyticsEvents AnalyticsEvent[] @ignore
 
   @@map("tenant")
 }
@@ -182,13 +183,14 @@ model Site {
   createdAt     DateTime   @default(now()) @map("created_at")
   updatedAt     DateTime   @updatedAt @map("updated_at")
 
-  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  origins     SiteOrigin[]
-  goals       ConversionGoal[]
-  experiments Experiment[]
-  guardrail   BrandGuardrail?
-  pageMaps    PageMap[]
-  snapshots   PageSnapshot[]
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  origins         SiteOrigin[]
+  goals           ConversionGoal[]
+  experiments     Experiment[]
+  guardrail       BrandGuardrail?
+  pageMaps        PageMap[]
+  snapshots       PageSnapshot[]
+  analyticsEvents AnalyticsEvent[] @ignore
 
   @@index([tenantId])
   @@map("site")
@@ -391,4 +393,44 @@ model AuditLog {
 
   @@index([tenantId, createdAt])
   @@map("audit_log")
+}
+
+// Analytics is queried in SQL; keep its schema here so future migrations preserve it.
+model AnalyticsEvent {
+  eventTime       DateTime @map("event_time") @db.Timestamp(3)
+  tenantId        String   @map("tenant_id")
+  siteId          String   @map("site_id")
+  sessionId       String   @map("session_id")
+  eventName       String   @map("event_name")
+  pagePath        String   @map("page_path")
+  referrerHost    String   @map("referrer_host")
+  deviceCategory  String   @map("device_category")
+  browserCategory String   @map("browser_category")
+  country         String
+  isBot           Int      @map("is_bot")
+  experimentId    String   @map("experiment_id")
+  variantId       String   @map("variant_id")
+  sectionId       String   @map("section_id")
+  selector        String
+  goal            String
+  scrollDepth     Int      @map("scroll_depth")
+  dwellMs         Int      @map("dwell_ms")
+  value           Float
+  props           String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  site            Site     @relation(fields: [siteId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([tenantId, siteId, eventTime], map: "events_site_time")
+  @@index([tenantId, experimentId, variantId], map: "events_experiment")
+  @@map("events")
+  @@ignore
+}
+
+model RateLimit {
+  key       String   @id
+  count     Int
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+
+  @@index([expiresAt], map: "rate_limit_expiry")
+  @@map("rate_limit")
 }
