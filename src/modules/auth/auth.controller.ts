@@ -13,6 +13,7 @@ import { AuthService } from './auth.service';
 import {
   LoginSchema,
   RegisterSchema,
+  ResetPasswordSchema,
   type LoginDto,
   type RegisterDto,
 } from './auth.dto';
@@ -21,6 +22,7 @@ import { Public } from '../../common/auth/public.decorator';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import type { AuthUser } from '../../common/auth/auth.types';
 import type { AppEnv } from '../../config/env';
+import { PasswordResetService } from './password-reset.service';
 
 const REFRESH_COOKIE = '__Host-lo_refresh';
 
@@ -29,6 +31,7 @@ export class AuthController {
   constructor(
     private readonly auth: AuthService,
     private readonly config: ConfigService<AppEnv, true>,
+    private readonly passwords: PasswordResetService,
   ) {}
 
   @Public()
@@ -37,9 +40,20 @@ export class AuthController {
     @Body(new ZodValidationPipe(RegisterSchema)) dto: RegisterDto,
     @Res({ passthrough: true }) res: FastifyReply,
   ): Promise<{ accessToken: string; user: unknown }> {
-    const result = await this.auth.register(dto.email, dto.password, dto.tenantName, dto.name);
+    const result = await this.auth.register(dto.token, dto.email, dto.name, dto.password);
     this.setRefreshCookie(res, result.refreshToken);
     return { accessToken: result.accessToken, user: result.user };
+  }
+
+  @Public()
+  @Post('reset-password')
+  @HttpCode(204)
+  async resetPassword(
+    @Body(new ZodValidationPipe(ResetPasswordSchema)) dto: { token: string; password: string },
+    @Res({ passthrough: true }) res: FastifyReply,
+  ): Promise<void> {
+    await this.passwords.complete(dto.token, dto.password);
+    this.logout(res);
   }
 
   @Public()

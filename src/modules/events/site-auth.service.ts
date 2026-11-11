@@ -32,9 +32,11 @@ export class SiteAuthService {
     if (cached) {
       try {
         const parsed = JSON.parse(cached) as SiteAuth & { ik?: string };
-        return parsed.siteId === siteId && this.constantTimeEq(parsed.ik ?? '', ingestKey)
-          ? parsed
-          : this.verifyFromDb(siteId, ingestKey, cacheKey);
+        if (parsed.siteId === siteId && this.constantTimeEq(parsed.ik ?? '', ingestKey)) {
+          const tenant = await this.prisma.tenant.findUnique({ where: { id: parsed.tenantId }, select: { archivedAt: true } });
+          return tenant && !tenant.archivedAt ? parsed : null;
+        }
+        return this.verifyFromDb(siteId, ingestKey, cacheKey);
       } catch {
         /* fall through */
       }
@@ -74,9 +76,9 @@ export class SiteAuthService {
   ): Promise<SiteAuth | null> {
     const site = await this.prisma.site.findUnique({
       where: { id: siteId },
-      include: { origins: true },
+      include: { origins: true, tenant: { select: { archivedAt: true } } },
     });
-    if (!site) return null;
+    if (!site || site.tenant.archivedAt) return null;
     if (!this.constantTimeEq(site.ingestKey, ingestKey)) return null;
 
     const auth: SiteAuth & { ik: string } = {

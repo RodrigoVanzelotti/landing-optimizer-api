@@ -108,8 +108,10 @@ model Tenant {
   dataRegion String   @default("us") @map("data_region")
   createdAt  DateTime @default(now()) @map("created_at")
   updatedAt  DateTime @updatedAt @map("updated_at")
+  archivedAt DateTime? @map("archived_at")
 
   memberships     UserMembership[]
+  invitations     TeamInvitation[]
   sites           Site[]
   apiKeys         ApiKey[]
   experiments     Experiment[]
@@ -125,10 +127,12 @@ model User {
   email        String   @unique
   name         String?
   passwordHash String?  @map("password_hash")
+  sessionVersion Int    @default(0) @map("session_version")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   memberships UserMembership[]
+  passwordResets PasswordReset[]
 
   @@map("user")
 }
@@ -146,6 +150,37 @@ model UserMembership {
   @@unique([tenantId, userId])
   @@index([userId])
   @@map("user_membership")
+}
+
+model PasswordReset {
+  id        String    @id
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset")
+}
+
+model TeamInvitation {
+  id              String    @id
+  tenantId        String    @map("tenant_id")
+  email           String
+  name            String
+  role            Role
+  tokenHash       String    @unique @map("token_hash")
+  invitedByUserId String?   @map("invited_by_user_id")
+  expiresAt       DateTime  @map("expires_at")
+  acceptedAt      DateTime? @map("accepted_at")
+  revokedAt       DateTime? @map("revoked_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, expiresAt])
+  @@map("team_invitation")
 }
 
 model ApiKey {

@@ -22,6 +22,7 @@ import { ApprovalsModule } from './modules/approvals/approvals.module';
 import { AuditReadModule } from './modules/audit/audit.controller';
 import { HealthController } from './health.controller';
 import { SdkController } from './sdk.controller';
+import { PlatformModule } from './modules/platform/platform.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { SdkController } from './sdk.controller';
     AnalyticsModule,
     // Feature modules
     AuthModule,
+    PlatformModule,
     SitesModule,
     GoalsModule,
     GuardrailsModule,

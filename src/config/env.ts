@@ -33,7 +33,12 @@ const EnvSchema = z.object({
   AI_SERVICE_URL: z.string().url().default('http://localhost:8000'),
   AI_SERVICE_TOKEN: z.string().default('dev-internal-token'),
 
-  DASHBOARD_ORIGIN: z.string().default('http://localhost:3000'),
+  DASHBOARD_ORIGIN: z.string().default('http://localhost:3000').refine((value) => value.split(',').every((part) => {
+    try {
+      const origin = new URL(part.trim());
+      return ['http:', 'https:'].includes(origin.protocol) && !origin.username && !origin.password && origin.pathname === '/' && !origin.search && !origin.hash;
+    } catch { return false; }
+  }), 'Expected comma-separated HTTP(S) dashboard origins'),
 
   CDN_SDK_BASE_URL: z.string().default('https://cdn.landingoptimizer.io/sdk'),
   INGEST_URL: z.string().default('http://localhost:3001/v1/events'),

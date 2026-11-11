@@ -6,6 +6,7 @@ export interface AuthUser {
   tenantId: string;
   role: Role;
   email: string;
+  sessionVersion?: number;
 }
 
 export interface JwtPayload {
@@ -13,4 +14,5 @@ export interface JwtPayload {
   tid: string;
   role: Role;
   email: string;
+  sv?: number;
 }

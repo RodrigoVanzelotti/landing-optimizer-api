@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "f8da9d53-4ce5-4ee9-bf08-9e1af6e0e31b",
     "name": "Local Demo Site Setup",
-    "description": "Registers a demo user, creates a site, and adds an allowed origin. The collection automatically stores the access token, site ID, ingest key, and public key as collection variables.",
+    "description": "Logs in to a previously provisioned demo account, creates a site, and adds an allowed origin. First create its tenant with tenant:create and accept the administrator invitation.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -56,14 +56,14 @@
   ],
   "item": [
     {
-      "name": "1. Register Demo User",
+      "name": "1. Log in Demo User",
       "event": [
         {
           "listen": "test",
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.test('Registration succeeded', function () {",
+              "pm.test('Login succeeded', function () {",
               "    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
               "});",
               "",
@@ -85,7 +85,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n    \"email\": \"{{email}}\",\n    \"password\": \"Password123!\",\n    \"tenantName\": \"Demo Tenant Workspace\"\n}",
+          "raw": "{\n    \"email\": \"{{email}}\",\n    \"password\": \"Password123!\"\n}",
           "options": {
             "raw": {
               "language": "json"
@@ -93,16 +93,16 @@
           }
         },
         "url": {
-          "raw": "{{api}}/auth/register",
+          "raw": "{{api}}/auth/login",
           "host": [
             "{{api}}"
           ],
           "path": [
             "auth",
-            "register"
+            "login"
           ]
         },
-        "description": "Registers the demo account and stores `accessToken` as a collection variable."
+        "description": "Logs in to an existing demo account and stores accessToken. Tenant creation is only available through the operator CLI."
       },
       "response": []
     },

@@ -16,6 +16,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
+    "tenant:create": "ts-node src/modules/team/provision-tenant.ts",
     "clickhouse:migrate": "ts-node src/modules/analytics/clickhouse/migrate.ts"
   },
   "dependencies": {

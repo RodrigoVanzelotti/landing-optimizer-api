@@ -93,6 +93,8 @@ export class SiteConfigService {
 
   /** Read from cache; rebuild on miss. Returns null for unknown/paused sites. */
   async get(siteId: string): Promise<SignedSiteConfig | null> {
+    const site = await this.prisma.site.findUnique({ where: { id: siteId }, include: { tenant: { select: { archivedAt: true } } } });
+    if (!site || site.status !== 'active' || site.tenant.archivedAt) return null;
     const cached = await this.redis.get(cacheKey(siteId));
     if (cached) {
       try {
@@ -101,8 +103,6 @@ export class SiteConfigService {
         /* fall through to rebuild */
       }
     }
-    const site = await this.prisma.site.findUnique({ where: { id: siteId } });
-    if (!site || site.status !== 'active') return null;
     return this.publish(siteId);
   }
 }

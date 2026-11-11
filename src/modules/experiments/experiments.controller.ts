@@ -72,7 +72,7 @@ export class ExperimentsController {
   }
 
   @Post(':id/approve')
-  @Roles('admin')
+  @Roles('editor')
   approve(
     @CurrentUser() user: AuthUser,
     @Param('id') id: string,
@@ -82,7 +82,7 @@ export class ExperimentsController {
   }
 
   @Post(':id/reject')
-  @Roles('admin')
+  @Roles('editor')
   reject(
     @CurrentUser() user: AuthUser,
     @Param('id') id: string,

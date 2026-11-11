@@ -1,5 +1,4 @@
 import {
-  ConflictException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -7,9 +6,10 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as argon2 from 'argon2';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { newId } from '../../common/crypto/ids';
+import { TeamService } from '../team/team.service';
 import type { AppEnv } from '../../config/env';
 import type { AuthUser, JwtPayload } from '../../common/auth/auth.types';
+import { isPlatformOwner } from '../../common/auth/platform-owner.guard';
 
 export interface AuthResult {
   accessToken: string;
@@ -28,42 +28,24 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService<AppEnv, true>,
+    private readonly team: TeamService,
   ) {}
 
-  /** Register a new operator + their first tenant (owner membership). */
+  /** Accept a one-use invitation; tenants are provisioned only by the operator script. */
   async register(
+    token: string,
     email: string,
+    name: string,
     password: string,
-    tenantName: string,
-    name?: string,
   ): Promise<AuthResult> {
-    const existing = await this.prisma.user.findUnique({ where: { email } });
-    if (existing) throw new ConflictException('Email already registered');
-
-    const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
-    const tenantId = newId();
-    const userId = newId();
-
-    await this.prisma.$transaction([
-      this.prisma.tenant.create({
-        data: { id: tenantId, name: tenantName, slug: slugify(tenantName, tenantId) },
-      }),
-      this.prisma.user.create({
-        data: { id: userId, email, name: name ?? null, passwordHash },
-      }),
-      this.prisma.userMembership.create({
-        data: { id: newId(), tenantId, userId, role: 'owner' },
-      }),
-    ]);
-
-    return this.issue({ userId, tenantId, role: 'owner', email });
+    return this.issue(await this.team.accept(token, email, name, password));
   }
 
   /** Log in and mint tokens scoped to the user's first tenant membership. */
   async login(email: string, password: string): Promise<AuthResult> {
     const user = await this.prisma.user.findUnique({
       where: { email },
-      include: { memberships: { orderBy: { createdAt: 'asc' }, take: 1 } },
+      include: { memberships: { where: { tenant: { archivedAt: null } }, orderBy: { createdAt: 'asc' }, take: 1 } },
     });
     const membership = user?.memberships[0];
     if (!user || !user.passwordHash || !membership) {
@@ -77,38 +59,47 @@ export class AuthService {
       tenantId: membership.tenantId,
       role: membership.role,
       email: user.email,
+      sessionVersion: user.sessionVersion,
     });
   }
 
   async refresh(token: string): Promise<AuthResult> {
+    let payload: JwtPayload & { typ?: string };
     try {
-      const payload = await this.jwt.verifyAsync<JwtPayload & { typ?: string }>(token);
-      if (payload.typ !== 'refresh') throw new Error('wrong token type');
-      return this.issue({
-        userId: payload.sub,
-        tenantId: payload.tid,
-        role: payload.role,
-        email: payload.email,
-      });
+      payload = await this.jwt.verifyAsync<JwtPayload & { typ?: string }>(token);
+      if (payload.typ !== 'refresh' || !payload.sub || !payload.tid) throw new Error('wrong token type');
     } catch {
       throw new UnauthorizedException('Invalid refresh token');
     }
+    const membership = await this.prisma.userMembership.findUnique({
+      where: { tenantId_userId: { tenantId: payload.tid, userId: payload.sub } },
+      include: { user: { select: { email: true, sessionVersion: true } }, tenant: { select: { archivedAt: true } } },
+    });
+    if (!membership) throw new UnauthorizedException('Membership no longer exists');
+    if (membership.tenant.archivedAt || membership.user.sessionVersion !== (payload.sv ?? 0)) throw new UnauthorizedException('Session no longer valid');
+    return this.issue({
+      userId: payload.sub,
+      tenantId: payload.tid,
+      role: membership.role,
+      email: membership.user.email,
+      sessionVersion: membership.user.sessionVersion,
+    });
   }
 
   async me(user: AuthUser): Promise<unknown> {
-    return this.prisma.user.findUnique({
+    const account = await this.prisma.user.findUnique({
       where: { id: user.userId },
       select: {
         id: true,
         email: true,
         name: true,
-        memberships: { select: { tenantId: true, role: true } },
       },
     });
+    return { ...account, tenantId: user.tenantId, role: user.role === 'owner' ? 'admin' : user.role, platformOwner: isPlatformOwner(user.email) };
   }
 
   private async issue(u: AuthUser): Promise<AuthResult> {
-    const base: JwtPayload = { sub: u.userId, tid: u.tenantId, role: u.role, email: u.email };
+    const base: JwtPayload = { sub: u.userId, tid: u.tenantId, role: u.role, email: u.email, sv: u.sessionVersion ?? 0 };
     const accessToken = await this.jwt.signAsync(base, {
       expiresIn: this.config.get('JWT_ACCESS_TTL', { infer: true }),
     });
@@ -122,13 +113,4 @@ export class AuthService {
       user: { id: u.userId, email: u.email, tenantId: u.tenantId, role: u.role },
     };
   }
-}
-
-function slugify(name: string, id: string): string {
-  const base = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40);
-  return `${base || 'tenant'}-${id.slice(0, 8)}`;
 }

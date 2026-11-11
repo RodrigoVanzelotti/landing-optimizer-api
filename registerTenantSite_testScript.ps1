@@ -2,10 +2,10 @@ $port_seed="3005"
 $api = 'http://localhost:3001/v1'
 $email = "demo+$port_seed@example.com"
 
-$reg = Invoke-RestMethod -Method Post -Uri "$api/auth/register" -ContentType 'application/json' -Body(@{
+# Provision this account with tenant:create and accept its invitation first.
+$reg = Invoke-RestMethod -Method Post -Uri "$api/auth/login" -ContentType 'application/json' -Body(@{
     email = $email;
     password = 'Password123!';
-    tenantName = "Demo Tenant Workspace";
 } | ConvertTo-Json)
 
 $token = $reg.accessToken
