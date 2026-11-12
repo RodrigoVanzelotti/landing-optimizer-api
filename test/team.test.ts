@@ -19,10 +19,10 @@ function setup(options: { users?: number; admins?: number; pending?: number; adm
     user: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
     userMembership: {
       findUnique: vi.fn().mockResolvedValue({ role: options.actorRole ?? 'admin', user: { email: admin.email } }),
-      findFirst: vi.fn().mockResolvedValue({ id: 'member', tenantId: admin.tenantId, role: options.targetRole ?? 'editor' }),
+      findFirst: vi.fn().mockResolvedValue({ id: 'member', userId: 'member-user', tenantId: admin.tenantId, role: options.targetRole ?? 'editor' }),
       findMany: vi.fn().mockResolvedValue([]),
       count: vi.fn(async ({ where }: { where: { role?: unknown } }) => where.role ? options.admins ?? 1 : options.users ?? 1),
-      create: vi.fn().mockResolvedValue({}), update: vi.fn().mockResolvedValue({}),
+      create: vi.fn().mockResolvedValue({}), update: vi.fn().mockResolvedValue({}), delete: vi.fn().mockResolvedValue({}),
     },
     teamInvitation: {
       findUnique: vi.fn().mockResolvedValue(invitation),
@@ -68,7 +68,9 @@ describe('tenant team invitations', () => {
     await expect(service.invite(admin, input)).rejects.toMatchObject({ status: 403 });
     await expect(service.changeRole(admin, 'member', 'admin')).rejects.toMatchObject({ status: 403 });
     await expect(service.revoke(admin, 'invite')).rejects.toMatchObject({ status: 403 });
+    await expect(service.removeMember(admin, 'member')).rejects.toMatchObject({ status: 403 });
     expect(tx.teamInvitation.create).not.toHaveBeenCalled();
+    expect(tx.userMembership.delete).not.toHaveBeenCalled();
   });
 
   it.each([{ users: 10 }, { users: 8, pending: 2 }])('reserves user slots and refuses an eleventh user (%j)', async (options) => {
@@ -131,6 +133,44 @@ describe('tenant team invitations', () => {
     await pending;
     expect(tx.$queryRaw.mock.calls[0]?.[0].join('')).toContain('FOR UPDATE');
     expect(tx.$queryRaw.mock.calls[0]?.[1]).toBe(admin.tenantId);
+  });
+});
+
+describe('removing team members', () => {
+  it('removes only the tenant membership and revokes invitations sent by that member', async () => {
+    const { service, tx } = setup();
+    await service.removeMember(admin, 'member');
+    expect(tx.userMembership.findFirst).toHaveBeenCalledWith({ where: { id: 'member', tenantId: admin.tenantId } });
+    expect(tx.userMembership.delete).toHaveBeenCalledWith({ where: { id: 'member', tenantId: admin.tenantId } });
+    expect(tx.teamInvitation.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({ tenantId: admin.tenantId, invitedByUserId: 'member-user', acceptedAt: null, revokedAt: null }),
+      data: { revokedAt: expect.any(Date) },
+    });
+    expect(tx.userMembership.delete.mock.invocationCallOrder[0]).toBeGreaterThan(tx.$queryRaw.mock.invocationCallOrder[0]!);
+  });
+
+  it('rejects missing and foreign memberships without changing data', async () => {
+    const { service, tx } = setup();
+    tx.userMembership.findFirst.mockResolvedValue(null);
+    await expect(service.removeMember(admin, 'foreign-member')).rejects.toMatchObject({ status: 404 });
+    expect(tx.userMembership.delete).not.toHaveBeenCalled();
+    expect(tx.teamInvitation.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('prevents removing the current account even if another administrator exists', async () => {
+    const { service, tx } = setup({ admins: 2 });
+    tx.userMembership.findFirst.mockResolvedValue({ id: 'self', userId: admin.userId, tenantId: admin.tenantId, role: 'admin' });
+    await expect(service.removeMember(admin, 'self')).rejects.toMatchObject({ status: 403 });
+    expect(tx.userMembership.delete).not.toHaveBeenCalled();
+  });
+
+  it.each(['admin', 'owner'])('protects the last %s and permits removal when another remains', async (targetRole) => {
+    const { service, tx } = setup({ targetRole });
+    await expect(service.removeMember(admin, 'member')).rejects.toMatchObject({ status: 409 });
+    expect(tx.userMembership.delete).not.toHaveBeenCalled();
+    tx.userMembership.count.mockResolvedValue(2);
+    await service.removeMember(admin, 'member');
+    expect(tx.userMembership.delete).toHaveBeenCalledOnce();
   });
 });
 

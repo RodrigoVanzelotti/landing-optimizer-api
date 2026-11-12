@@ -26,7 +26,7 @@ export class TeamService {
   }
 
   private async lock(tx: Prisma.TransactionClient, tenantId: string): Promise<void> {
-    // Serialize invitations, acceptance and role changes so concurrent requests cannot exceed limits.
+    // Serialize membership changes and invitations to preserve capacity and the last administrator.
     const rows = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM tenant WHERE id = ${tenantId} AND archived_at IS NULL FOR UPDATE`;
     if (!rows.length) throw new NotFoundException('Tenant not found');
   }
@@ -84,6 +84,22 @@ export class TeamService {
       }
       if (!isAdmin(target.role) && isAdmin(role)) await this.capacity(tx, user.tenantId, role, false);
       return tx.userMembership.update({ where: { id: target.id }, data: { role }, select: memberSelect });
+    });
+  }
+
+  async removeMember(user: AuthUser, membershipId: string): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await this.lock(tx, user.tenantId);
+      await this.requireAdmin(tx, user);
+      const target = await tx.userMembership.findFirst({ where: { id: membershipId, tenantId: user.tenantId } });
+      if (!target) throw new NotFoundException('Usuário não encontrado neste cliente.');
+      if (target.userId === user.userId) throw new ForbiddenException('Você não pode remover seu próprio acesso.');
+      if (isAdmin(target.role)) {
+        const admins = await tx.userMembership.count({ where: { tenantId: user.tenantId, role: { in: ['admin', 'owner'] } } });
+        if (admins <= 1) throw new ConflictException('O cliente precisa manter pelo menos um administrador.');
+      }
+      await tx.teamInvitation.updateMany({ where: { tenantId: user.tenantId, invitedByUserId: target.userId, ...active() }, data: { revokedAt: new Date() } });
+      await tx.userMembership.delete({ where: { id: target.id, tenantId: user.tenantId } });
     });
   }
 

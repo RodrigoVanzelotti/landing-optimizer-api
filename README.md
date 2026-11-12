@@ -70,6 +70,13 @@ link. Pending invites reserve slots: each tenant has at most 10 registered users
 and 3 administrators, including the initial admin. Revoking or expiring an unused
 invite frees its reservation. The final administrator cannot be demoted.
 
+Administrators can remove another member in **Team members** after confirmation.
+`DELETE /v1/team/members/:id` removes only that tenant membership, immediately
+blocking access and refresh tokens for it. The account, other memberships and
+history are preserved; pending invitations sent by the removed member are revoked.
+Self-removal and removal of the last administrator are rejected. Existing accounts
+remain subject to the current invitation rule that rejects already registered emails.
+
 Links use `/invite?name=...&email=...#SECRET`; copy the whole link, including the
 fragment. The server stores only its hash. An invite binds the email, tenant and
 role, expires after 7 days and can be accepted once. Acceptance creates a user in

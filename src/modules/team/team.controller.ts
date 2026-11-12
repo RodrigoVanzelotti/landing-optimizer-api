@@ -25,6 +25,11 @@ export class TeamController {
   @HttpCode(204)
   revoke(@CurrentUser() user: AuthUser, @Param('id') id: string) { return this.team.revoke(user, id); }
 
+  @Delete('members/:id')
+  @Roles('admin')
+  @HttpCode(204)
+  removeMember(@CurrentUser() user: AuthUser, @Param('id') id: string) { return this.team.removeMember(user, id); }
+
   @Patch('members/:id/role')
   @Roles('admin')
   changeRole(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body(new ZodValidationPipe(ChangeRoleSchema)) dto: { role: 'admin' | 'editor' | 'viewer' }) {

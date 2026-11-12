@@ -29,9 +29,10 @@ describe('role authorization', () => {
     const { ctx: invite } = context(role, 'POST', '/v1/team/invitations', TeamController.prototype.invite);
     const { ctx: changeRole } = context(role, 'PATCH', '/v1/team/members/id/role', TeamController.prototype.changeRole);
     const { ctx: revoke } = context(role, 'DELETE', '/v1/team/invitations/id', TeamController.prototype.revoke);
+    const { ctx: remove } = context(role, 'DELETE', '/v1/team/members/id', TeamController.prototype.removeMember);
     if (role === 'viewer') expect(() => guard.canActivate(teamRead)).toThrow();
     else expect(guard.canActivate(teamRead)).toBe(true);
-    for (const ctx of [invite, changeRole, revoke]) {
+    for (const ctx of [invite, changeRole, revoke, remove]) {
       if (role === 'admin') expect(guard.canActivate(ctx)).toBe(true);
       else expect(() => guard.canActivate(ctx)).toThrow();
     }
