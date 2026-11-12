@@ -42,6 +42,23 @@ idempotent deploy commands; package and Dockerfile changes rebuild the image.
 See [../landing-optimizer-infra/docs/API_CONTRACTS.md](../landing-optimizer-infra/docs/API_CONTRACTS.md).
 - `POST /v1/auth/register|login` — operator auth; registration requires a valid tenant invitation (see below).
 
+### Dashboard sessions
+
+`POST /v1/auth/login` accepts `{ email, password, rememberMe?: boolean }`.
+Persistence is disabled by default. With `rememberMe: true`, the secure HttpOnly
+refresh cookie survives browser restarts; otherwise it is a browser session cookie
+(browser session-restore settings can retain these cookies).
+
+`JWT_ACCESS_TTL` defaults to 900 seconds and `JWT_REFRESH_TTL` to 2592000 seconds
+(30 days). The refresh token expiry is fixed at login and preserved on renewal;
+the final access token is capped at that deadline. Persistent cookie Max-Age also
+shrinks to the time remaining. Check deployment overrides of `JWT_REFRESH_TTL`
+when rolling out this policy. Existing refresh tokens retain their original expiry
+and become nonpersistent on refresh; users opt in at their next login. Invitation
+acceptance creates a nonpersistent session. Password resets, removed memberships
+and archived tenants continue to invalidate access. Logout clears the browser cookie;
+it does not revoke previously copied JWTs on the server.
+
 ### Tenants and team invitations
 
 Only the platform owner (`rodrigovanzelotti@gmail.com`) can create tenants through
@@ -133,6 +150,25 @@ Apply `20261111150000_platform_management` before deploying this release; it add
 | `modules/approvals` / `modules/audit` | Review queue + audit log reads. |
 
 ## Tests
+
+Conversion goals of kind `url` match incoming `page_view` paths (exact, prefix,
+contains or regex); `form_submit` matches native submissions, optionally by the
+exact sanitized form selector. Both retain the source event and generate a
+`conversion` with the configured goal name. They apply prospectively, without
+backfilling earlier traffic. Explicit `event` goals use `conversion(name)`.
+
+Experiment results count each exposed session once per variant and only count
+matching conversions after exposure, up to the experiment end. Sessions use the
+existing daily privacy salt. A selected primary goal filters these results;
+without one all conversion goals count. Drafts/AI suggestions can select a goal
+through `PATCH /v1/experiments/:id` with `primaryGoalId` (or null to clear it).
+
 ```bash
 npm test        # pure-logic unit tests (state machine, stats, signing)
 ```
+
+For the opt-in SQL attribution tests, start disposable PostgreSQL 16 and
+ClickHouse 24.3 containers named `lo-goals-postgres-check` and
+`lo-goals-clickhouse-check`, then run with `GOAL_SQL_INTEGRATION=1`. These tests
+replace the `events` table inside those dedicated containers; never point them
+at a live database. The ordinary test run skips these two integration cases.

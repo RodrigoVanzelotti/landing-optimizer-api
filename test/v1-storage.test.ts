@@ -21,7 +21,7 @@ describe('V1 shared rate limits', () => {
 
 it('does not acknowledge a batch that failed to persist', async () => {
   const service = new EventsService(
-    {} as never,
+    { conversionGoal: { findMany: vi.fn().mockResolvedValue([]) } } as never,
     { allow: vi.fn().mockResolvedValue(true) } as never,
     { insertEvents: vi.fn().mockRejectedValue(new Error('storage unavailable')) } as never,
     {

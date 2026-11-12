@@ -8,8 +8,7 @@ import {
   Res,
 } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { ConfigService } from '@nestjs/config';
-import { AuthService } from './auth.service';
+import { AuthService, type AuthResult } from './auth.service';
 import {
   LoginSchema,
   RegisterSchema,
@@ -21,7 +20,6 @@ import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { Public } from '../../common/auth/public.decorator';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import type { AuthUser } from '../../common/auth/auth.types';
-import type { AppEnv } from '../../config/env';
 import { PasswordResetService } from './password-reset.service';
 
 const REFRESH_COOKIE = '__Host-lo_refresh';
@@ -30,7 +28,6 @@ const REFRESH_COOKIE = '__Host-lo_refresh';
 export class AuthController {
   constructor(
     private readonly auth: AuthService,
-    private readonly config: ConfigService<AppEnv, true>,
     private readonly passwords: PasswordResetService,
   ) {}
 
@@ -41,7 +38,7 @@ export class AuthController {
     @Res({ passthrough: true }) res: FastifyReply,
   ): Promise<{ accessToken: string; user: unknown }> {
     const result = await this.auth.register(dto.token, dto.email, dto.name, dto.password);
-    this.setRefreshCookie(res, result.refreshToken);
+    this.setRefreshCookie(res, result);
     return { accessToken: result.accessToken, user: result.user };
   }
 
@@ -63,8 +60,8 @@ export class AuthController {
     @Body(new ZodValidationPipe(LoginSchema)) dto: LoginDto,
     @Res({ passthrough: true }) res: FastifyReply,
   ): Promise<{ accessToken: string; user: unknown }> {
-    const result = await this.auth.login(dto.email, dto.password);
-    this.setRefreshCookie(res, result.refreshToken);
+    const result = await this.auth.login(dto.email, dto.password, dto.rememberMe);
+    this.setRefreshCookie(res, result);
     return { accessToken: result.accessToken, user: result.user };
   }
 
@@ -77,7 +74,7 @@ export class AuthController {
   ): Promise<{ accessToken: string }> {
     const token = readCookie(req, REFRESH_COOKIE);
     const result = await this.auth.refresh(token ?? '');
-    this.setRefreshCookie(res, result.refreshToken);
+    this.setRefreshCookie(res, result);
     return { accessToken: result.accessToken };
   }
 
@@ -95,11 +92,11 @@ export class AuthController {
     return this.auth.me(user);
   }
 
-  private setRefreshCookie(res: FastifyReply, token: string): void {
-    const maxAge = this.config.get('JWT_REFRESH_TTL', { infer: true });
+  private setRefreshCookie(res: FastifyReply, result: AuthResult): void {
+    const maxAge = Math.max(0, result.refreshExpiresAt - Math.floor(Date.now() / 1000));
     void res.header(
       'set-cookie',
-      `${REFRESH_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`,
+      `${REFRESH_COOKIE}=${result.refreshToken}; Path=/; HttpOnly; Secure; SameSite=Strict${result.rememberMe ? `; Max-Age=${maxAge}` : ''}`,
     );
   }
 }

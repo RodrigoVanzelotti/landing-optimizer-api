@@ -72,6 +72,7 @@ export const CreateExperimentSchema = z
 export type CreateExperimentDto = z.infer<typeof CreateExperimentSchema>;
 
 export const UpdateExperimentSchema = z.object({
+  primaryGoalId: z.string().min(1).nullable().optional(),
   name: z.string().min(1).max(160).optional(),
   hypothesis: z.string().max(2000).optional(),
   allocation: z.number().min(0).max(1).optional(),

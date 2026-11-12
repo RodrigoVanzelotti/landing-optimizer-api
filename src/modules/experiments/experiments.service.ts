@@ -119,6 +119,10 @@ export class ExperimentsService {
       throw new ConflictException(`Cannot edit experiment in status ${experiment.status}`);
     }
     const data: Prisma.ExperimentUpdateInput = {};
+    if (dto.primaryGoalId !== undefined) {
+      if (dto.primaryGoalId) await this.requireGoalForSite(experiment.siteId, dto.primaryGoalId);
+      data.primaryGoal = dto.primaryGoalId ? { connect: { id: dto.primaryGoalId } } : { disconnect: true };
+    }
     if (dto.name !== undefined) data.name = dto.name;
     if (dto.hypothesis !== undefined) data.hypothesis = dto.hypothesis;
     if (dto.allocation !== undefined) data.allocation = dto.allocation;

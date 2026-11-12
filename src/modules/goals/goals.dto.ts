@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { sanitizeSelector } from '../events/event-scrub';
 
 /**
  * Conversion goal matchers, keyed by goal kind. The matcher shape is validated
@@ -33,7 +34,8 @@ const UrlMatcherSchema = z
 
 const FormSubmitMatcherSchema = z
   .object({
-    selector: z.string().min(1).max(256).optional(),
+    selector: z.string().trim().min(1).max(256)
+      .refine(value => sanitizeSelector(value) === value, 'selector must be a supported safe selector').optional(),
   })
   .strict()
   .default({});
@@ -63,7 +65,7 @@ const GoalNameSchema = z
   .string()
   .trim()
   .min(1)
-  .max(80)
+  .max(64)
   .regex(/^[\w][\w .-]*$/, 'name may contain letters, numbers, spaces, dots and dashes');
 
 export const CreateGoalSchema = z

@@ -14,6 +14,8 @@ import { isPlatformOwner } from '../../common/auth/platform-owner.guard';
 export interface AuthResult {
   accessToken: string;
   refreshToken: string;
+  refreshExpiresAt: number;
+  rememberMe: boolean;
   user: { id: string; email: string; tenantId: string; role: string };
 }
 
@@ -42,7 +44,7 @@ export class AuthService {
   }
 
   /** Log in and mint tokens scoped to the user's first tenant membership. */
-  async login(email: string, password: string): Promise<AuthResult> {
+  async login(email: string, password: string, rememberMe = false): Promise<AuthResult> {
     const user = await this.prisma.user.findUnique({
       where: { email },
       include: { memberships: { where: { tenant: { archivedAt: null } }, orderBy: { createdAt: 'asc' }, take: 1 } },
@@ -60,14 +62,15 @@ export class AuthService {
       role: membership.role,
       email: user.email,
       sessionVersion: user.sessionVersion,
-    });
+    }, rememberMe);
   }
 
   async refresh(token: string): Promise<AuthResult> {
-    let payload: JwtPayload & { typ?: string };
+    let payload: JwtPayload & { typ?: string; exp?: number; rememberMe?: boolean };
     try {
-      payload = await this.jwt.verifyAsync<JwtPayload & { typ?: string }>(token);
+      payload = await this.jwt.verifyAsync<typeof payload>(token);
       if (payload.typ !== 'refresh' || !payload.sub || !payload.tid) throw new Error('wrong token type');
+      if (typeof payload.exp !== 'number' || !Number.isSafeInteger(payload.exp) || payload.exp <= Math.floor(Date.now() / 1000)) throw new Error('Invalid session expiration');
     } catch {
       throw new UnauthorizedException('Invalid refresh token');
     }
@@ -83,7 +86,7 @@ export class AuthService {
       role: membership.role,
       email: membership.user.email,
       sessionVersion: membership.user.sessionVersion,
-    });
+    }, payload.rememberMe === true, payload.exp);
   }
 
   async me(user: AuthUser): Promise<unknown> {
@@ -98,18 +101,27 @@ export class AuthService {
     return { ...account, tenantId: user.tenantId, role: user.role === 'owner' ? 'admin' : user.role, platformOwner: isPlatformOwner(user.email) };
   }
 
-  private async issue(u: AuthUser): Promise<AuthResult> {
+  private async issue(
+    u: AuthUser,
+    rememberMe = false,
+    refreshExpiresAt = Math.floor(Date.now() / 1000) + this.config.get('JWT_REFRESH_TTL', { infer: true }),
+  ): Promise<AuthResult> {
+    const now = Math.floor(Date.now() / 1000);
+    if (refreshExpiresAt <= now) throw new UnauthorizedException('Session expired');
     const base: JwtPayload = { sub: u.userId, tid: u.tenantId, role: u.role, email: u.email, sv: u.sessionVersion ?? 0 };
-    const accessToken = await this.jwt.signAsync(base, {
-      expiresIn: this.config.get('JWT_ACCESS_TTL', { infer: true }),
+    const accessToken = await this.jwt.signAsync({
+      ...base,
+      exp: Math.min(now + this.config.get('JWT_ACCESS_TTL', { infer: true }), refreshExpiresAt),
     });
     const refreshToken = await this.jwt.signAsync(
-      { ...base, typ: 'refresh' },
-      { expiresIn: this.config.get('JWT_REFRESH_TTL', { infer: true }) },
+      // Preserve the login deadline across renewals, including legacy refresh tokens.
+      { ...base, typ: 'refresh', rememberMe, exp: refreshExpiresAt },
     );
     return {
       accessToken,
       refreshToken,
+      refreshExpiresAt,
+      rememberMe,
       user: { id: u.userId, email: u.email, tenantId: u.tenantId, role: u.role },
     };
   }

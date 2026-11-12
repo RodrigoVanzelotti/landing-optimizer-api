@@ -26,7 +26,7 @@ const EnvSchema = z.object({
 
   JWT_SECRET: z.string().min(16),
   JWT_ACCESS_TTL: z.coerce.number().int().positive().default(900),
-  JWT_REFRESH_TTL: z.coerce.number().int().positive().default(1209600),
+  JWT_REFRESH_TTL: z.coerce.number().int().positive().default(2592000),
 
   CONFIG_ENCRYPTION_KEY: z.string().default(''),
 

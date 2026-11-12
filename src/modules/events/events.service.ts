@@ -13,6 +13,7 @@ import {
 } from './event-scrub';
 import { SiteAuthService } from './site-auth.service';
 import { Logger } from '../../common/logging/logger';
+import { matchesGoal } from '../goals/goal-matcher';
 
 const logger = Logger('EventsService');
 
@@ -67,8 +68,9 @@ export class EventsService {
 
     const sessionId = this.siteAuth.pseudoSession(envelope.sid, site.siteId);
     const now = new Date();
+    const latestOffset = Math.max(...behavioral.map(e => e.t));
     const rows: EventRow[] = behavioral.map((e) => ({
-      event_time: fmt(now),
+      event_time: fmt(new Date(now.getTime() - latestOffset + e.t)),
       tenant_id: site.tenantId,
       site_id: site.siteId,
       session_id: sessionId,
@@ -91,6 +93,21 @@ export class EventsService {
     }));
 
     try {
+      if (behavioral.some(e => e.n === 'page_view' || e.n === 'form_submit')) {
+        const goals = await this.prisma.conversionGoal.findMany({
+          where: { siteId: site.siteId, site: { tenantId: site.tenantId }, kind: { in: ['url', 'form_submit'] } },
+        });
+        const conversions: EventRow[] = [];
+        const pageView = rows.find(row => row.event_name === 'page_view');
+        for (const goal of goals) {
+          const urlMatch = goal.kind === 'url' && pageView !== undefined && matchesGoal(goal, pageView);
+          for (const row of rows) {
+            const matches = goal.kind === 'url' ? urlMatch && row.event_name === 'page_view' : matchesGoal(goal, row);
+            if (matches) conversions.push({ ...row, event_name: 'conversion', goal: goal.name, value: 1 });
+          }
+        }
+        rows.push(...conversions);
+      }
       await this.ch.insertEvents(rows);
     } catch {
       logger.warn('event_batch_dropped', {

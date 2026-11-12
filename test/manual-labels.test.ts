@@ -48,7 +48,7 @@ describe('manual labeling selector contract', () => {
     const upsert = vi.fn().mockResolvedValue({});
     const insertEvents = vi.fn().mockResolvedValue(undefined);
     const service = new EventsService(
-      { pageMap: { upsert } } as never,
+      { pageMap: { upsert }, conversionGoal: { findMany: vi.fn().mockResolvedValue([]) } } as never,
       { allow: vi.fn().mockResolvedValue(true) } as never,
       { insertEvents } as never,
       {

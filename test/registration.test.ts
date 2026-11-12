@@ -12,7 +12,7 @@ const account = { userId: 'user', tenantId: 'existing-tenant', email: 'ana@examp
 function setup() {
   const prisma = { userMembership: { findUnique: vi.fn().mockResolvedValue({ role: 'viewer', user: { email: account.email, sessionVersion: 0 }, tenant: { archivedAt: null } }) } };
   const team = { accept: vi.fn().mockResolvedValue(account) };
-  const jwt = { signAsync: vi.fn().mockResolvedValue('signed'), verifyAsync: vi.fn().mockResolvedValue({ sub: account.userId, tid: account.tenantId, role: 'admin', typ: 'refresh' }) };
+  const jwt = { signAsync: vi.fn().mockResolvedValue('signed'), verifyAsync: vi.fn().mockResolvedValue({ sub: account.userId, tid: account.tenantId, role: 'admin', typ: 'refresh', exp: Math.floor(Date.now() / 1000) + 900 }) };
   const config = { get: () => 900 };
   const auth = new AuthService(prisma as unknown as PrismaService, jwt as unknown as JwtService, config as unknown as ConfigService<AppEnv, true>, team as unknown as TeamService);
   return { auth, prisma, team, jwt };

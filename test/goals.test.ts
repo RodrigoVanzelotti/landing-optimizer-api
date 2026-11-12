@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CreateGoalSchema, parseGoalMatcher } from '../src/modules/goals/goals.dto';
+import { ExperimentsService } from '../src/modules/experiments/experiments.service';
+import { UpdateExperimentSchema } from '../src/modules/experiments/experiments.dto';
 
 describe('goal matcher validation', () => {
   it('event matcher accepts empty input and rejects extra keys', () => {
@@ -31,6 +33,30 @@ describe('goal matcher validation', () => {
       selector: '#signup',
     });
   });
+
+  it('accepts labeled forms and rejects unsafe or unreachable selectors', () => {
+    const selector = '[data-lo-id="lead-form"]';
+    expect(parseGoalMatcher('form_submit', { selector: ` ${selector} ` })).toEqual({ selector });
+    expect(() => parseGoalMatcher('form_submit', { selector: 'input[value="private"]' })).toThrow();
+    expect(() => CreateGoalSchema.parse({ name: 'a'.repeat(65) })).toThrow();
+  });
+});
+
+it('sets the primary goal on a draft with site ownership checks and freezes it after review', async () => {
+  const findUnique = vi.fn().mockResolvedValue({ tenantId: 'tenant', siteId: 'site', status: 'draft' });
+  const findFirst = vi.fn().mockResolvedValue({ id: 'goal' });
+  const update = vi.fn().mockResolvedValue({});
+  const service = new ExperimentsService({ experiment: { findUnique, update }, conversionGoal: { findFirst } } as never, {} as never, {} as never);
+  await service.update('tenant', 'experiment', UpdateExperimentSchema.parse({ primaryGoalId: 'goal' }));
+  expect(findFirst).toHaveBeenCalledWith({ where: { id: 'goal', siteId: 'site' }, select: { id: true } });
+  expect(update).toHaveBeenCalledWith({ where: { id: 'experiment' }, data: { primaryGoal: { connect: { id: 'goal' } } } });
+  await service.update('tenant', 'experiment', { primaryGoalId: null });
+  expect(update).toHaveBeenLastCalledWith({ where: { id: 'experiment' }, data: { primaryGoal: { disconnect: true } } });
+  findFirst.mockResolvedValue(null);
+  await expect(service.update('tenant', 'experiment', { primaryGoalId: 'foreign-goal' })).rejects.toThrow('Unknown conversion goal for this site');
+  findUnique.mockResolvedValue({ tenantId: 'tenant', siteId: 'site', status: 'running' });
+  await expect(service.update('tenant', 'experiment', { primaryGoalId: 'goal' })).rejects.toThrow('Cannot edit experiment');
+  expect(update).toHaveBeenCalledTimes(2);
 });
 
 describe('CreateGoalSchema', () => {

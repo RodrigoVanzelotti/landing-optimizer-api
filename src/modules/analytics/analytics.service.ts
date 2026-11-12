@@ -188,7 +188,7 @@ export class AnalyticsService {
   ): Promise<{ experimentId: string; variants: VariantResult[] }> {
     const experiment = await this.prisma.experiment.findUnique({
       where: { id: experimentId },
-      include: { variants: true },
+      include: { variants: true, primaryGoal: true },
     });
     if (!experiment) throw new NotFoundException('Experiment not found');
     if (experiment.tenantId !== tenantId) throw new ForbiddenException('Cross-tenant access');
@@ -198,13 +198,30 @@ export class AnalyticsService {
       exposures: string;
       conversions: string;
     }>(
-      `SELECT variant_id,
-              sum(exposures) AS exposures,
-              sum(conversions) AS conversions
-       FROM mv_experiment_stats
-       WHERE tenant_id = {tenantId:UUID} AND experiment_id = {experimentId:UUID}
-       GROUP BY variant_id`,
-      { tenantId, experimentId },
+      `WITH exposures AS (
+         SELECT session_id, variant_id, min(event_time) AS first_exposure
+         FROM events
+         WHERE tenant_id = {tenantId:UUID} AND site_id = {siteId:UUID}
+           AND experiment_id = {experimentId:UUID} AND event_name = 'exposure' AND is_bot = 0
+         GROUP BY session_id, variant_id
+       ), conversions AS (
+         SELECT session_id, max(event_time) AS converted_at
+         FROM events
+         WHERE tenant_id = {tenantId:UUID} AND site_id = {siteId:UUID}
+           AND event_name = 'conversion' AND is_bot = 0
+           ${experiment.primaryGoal ? 'AND goal = {goal:String}' : ''}
+           ${experiment.endedAt ? 'AND event_time <= {endedAt:DateTime64}' : ''}
+         GROUP BY session_id
+       )
+       SELECT e.variant_id, count() AS exposures,
+              sum(CASE WHEN c.converted_at >= e.first_exposure THEN 1 ELSE 0 END) AS conversions
+       FROM exposures e LEFT JOIN conversions c ON e.session_id = c.session_id
+       GROUP BY e.variant_id`,
+      {
+        tenantId, siteId: experiment.siteId, experimentId,
+        ...(experiment.primaryGoal ? { goal: experiment.primaryGoal.name } : {}),
+        ...(experiment.endedAt ? { endedAt: experiment.endedAt.toISOString().replace('T', ' ').replace('Z', '') } : {}),
+      },
     );
     const byId = new Map(rows.map((r) => [r.variant_id, r]));
 
