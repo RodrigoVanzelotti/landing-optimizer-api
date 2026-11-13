@@ -8,6 +8,7 @@ import { CryptoModule } from './common/crypto/crypto.module';
 import { AuditModule } from './common/audit/audit.module';
 import { JwtAuthGuard } from './common/auth/jwt-auth.guard';
 import { RolesGuard } from './common/auth/roles.guard';
+import { ControlPlaneRateGuard } from './common/auth/control-plane-rate.guard';
 import { TransactionLoggingInterceptor } from './common/logging/transaction-logging.interceptor';
 import { AuthModule } from './modules/auth/auth.module';
 import { SitesModule } from './modules/sites/sites.module';
@@ -55,6 +56,7 @@ import { PlatformModule } from './modules/platform/platform.module';
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     // Enforce @Roles() after authentication.
     { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_GUARD, useClass: ControlPlaneRateGuard },
     // Log successful control-plane mutations once, with request correlation.
     { provide: APP_INTERCEPTOR, useClass: TransactionLoggingInterceptor },
   ],

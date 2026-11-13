@@ -49,12 +49,21 @@ describe('tenant management', () => {
       $queryRaw: vi.fn().mockResolvedValue([{ id: 'customer-tenant' }]),
       tenant: { findUnique: vi.fn().mockResolvedValue({ id: 'customer-tenant', name: 'Acme', archivedAt: null }), findMany: vi.fn().mockResolvedValue([]), update: vi.fn().mockResolvedValue({}) },
       userMembership: { findFirst: vi.fn().mockResolvedValue(null) },
+      user: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     };
     const prisma = { ...tx, $transaction: vi.fn(async (fn: (client: typeof tx) => Promise<unknown>) => fn(tx)) };
     const config = { get: () => 'https://dashboard.example.com,http://localhost:3000' };
     const service = new PlatformService(prisma as unknown as PrismaService, config as unknown as ConfigService<AppEnv, true>);
     return { service, tx, prisma };
   }
+
+  it('revokes all member sessions on archive and does not revive them on restore', async () => {
+    const { service, tx } = setup();
+    await service.archive(owner, 'customer-tenant', 'Acme');
+    expect(tx.user.updateMany).toHaveBeenCalledWith({ where: { memberships: { some: { tenantId: 'customer-tenant' } } }, data: { sessionVersion: { increment: 1 } } });
+    await service.restore('customer-tenant', owner.userId);
+    expect(tx.user.updateMany).toHaveBeenCalledOnce();
+  });
 
   it('lists archived tenants and selects only safe account fields for tenant details', async () => {
     const { service, tx } = setup();

@@ -6,21 +6,19 @@ import { SiteAuthService } from '../src/modules/events/site-auth.service';
 import { SiteConfigService } from '../src/modules/sites/site-config.service';
 
 describe('archived tenant public surfaces', () => {
-  it('rejects cached ingest authorization for archived tenants and permits it again after restoration', async () => {
-    const prisma = { tenant: { findUnique: vi.fn().mockResolvedValue({ archivedAt: new Date() }) } };
-    const redis = { get: vi.fn().mockResolvedValue(JSON.stringify({ siteId: 'site', tenantId: 'tenant', active: true, ik: 'key', origins: [] })) };
-    const service = new SiteAuthService(prisma as unknown as PrismaService, redis as unknown as RedisService);
+  it('rejects ingest authorization for archived tenants and permits it again after restoration', async () => {
+    const site = { id: 'site', tenantId: 'tenant', ingestKey: 'key', status: 'active', origins: [], tenant: { archivedAt: new Date() as Date | null } };
+    const prisma = { site: { findUnique: vi.fn().mockResolvedValue(site) } };
+    const service = new SiteAuthService(prisma as unknown as PrismaService, {} as never);
     expect(await service.resolveSite('site', 'key')).toBeNull();
-    prisma.tenant.findUnique.mockResolvedValue({ archivedAt: null });
+    site.tenant.archivedAt = null;
     expect(await service.resolveSite('site', 'key')).toMatchObject({ active: true });
   });
 
   it('does not authorize an archived tenant on a cache miss', async () => {
     const prisma = { site: { findUnique: vi.fn().mockResolvedValue({ id: 'site', tenantId: 'tenant', ingestKey: 'key', tenant: { archivedAt: new Date() } }) } };
-    const redis = { get: vi.fn().mockResolvedValue(null), set: vi.fn() };
-    const service = new SiteAuthService(prisma as unknown as PrismaService, redis as unknown as RedisService);
+    const service = new SiteAuthService(prisma as unknown as PrismaService, {} as never);
     expect(await service.resolveSite('site', 'key')).toBeNull();
-    expect(redis.set).not.toHaveBeenCalled();
   });
 
   it('never serves a cached experiment configuration for an archived tenant', async () => {

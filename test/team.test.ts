@@ -17,7 +17,7 @@ function setup(options: { users?: number; admins?: number; pending?: number; adm
   const tx = {
     auditLog: { create: vi.fn().mockResolvedValue({}), findFirst: vi.fn().mockResolvedValue(null) },
     $queryRaw: vi.fn().mockResolvedValue([{ id: admin.tenantId }]),
-    user: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+    user: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     userMembership: {
       findUnique: vi.fn().mockResolvedValue({ role: options.actorRole ?? 'admin', user: { email: admin.email } }),
       findFirst: vi.fn().mockResolvedValue({ id: 'member', userId: 'member-user', tenantId: admin.tenantId, role: options.targetRole ?? 'editor' }),
@@ -45,6 +45,24 @@ function setup(options: { users?: number; admins?: number; pending?: number; adm
 }
 
 describe('tenant team invitations', () => {
+  it('permanently revokes account sessions when a member is removed, without resetting the version on reactivation', async () => {
+    const { service, tx, invitation } = setup();
+    await service.removeMember(admin, 'member');
+    expect(tx.user.updateMany).toHaveBeenCalledWith({ where: { id: 'member-user' }, data: { sessionVersion: { increment: 1 } } });
+    tx.user.findFirst.mockResolvedValue({ id: 'member-user', memberships: [] });
+    tx.teamInvitation.findFirst.mockResolvedValue({ ...invitation, acceptedAt: new Date() });
+    await service.reactivate(admin, input);
+    expect(tx.user.updateMany).toHaveBeenCalledOnce();
+  });
+  it('prevents a tenant administrator from provisioning the platform identity, including an old invitation', async () => {
+    const { service, tx, invitation } = setup();
+    const email = 'rodrigovanzelotti@gmail.com';
+    await expect(service.invite({ ...admin, email: 'attacker@gmail.com' }, { ...input, email })).rejects.toMatchObject({ status: 403 });
+    expect(tx.teamInvitation.create).not.toHaveBeenCalled();
+    invitation.email = email;
+    await expect(service.accept('token', email, 'Platform owner', 'password')).rejects.toMatchObject({ status: 403 });
+    expect(tx.user.create).not.toHaveBeenCalled();
+  });
   it('stores only a token hash and produces encoded personalized links with a secret fragment', async () => {
     const { service, tx } = setup();
     const result = await service.invite(admin, input);

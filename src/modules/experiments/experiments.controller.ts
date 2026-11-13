@@ -16,6 +16,7 @@ import {
   RejectSchema,
   ScheduleSchema,
   UpdateExperimentSchema,
+  ExperimentQuerySchema,
   type ApproveDto,
   type CompleteDto,
   type CreateExperimentDto,
@@ -44,10 +45,9 @@ export class ExperimentsController {
   @Get()
   list(
     @CurrentUser() user: AuthUser,
-    @Query('siteId') siteId?: string,
-    @Query('status') status?: ExperimentStatus,
+    @Query(new ZodValidationPipe(ExperimentQuerySchema)) query: { siteId?: string; status?: ExperimentStatus },
   ) {
-    return this.experiments.list(user.tenantId, { siteId, status });
+    return this.experiments.list(user.tenantId, query);
   }
 
   @Get(':id')

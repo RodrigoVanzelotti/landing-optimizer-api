@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # --- dependency stage ---
-FROM node:20-slim AS dependencies
+FROM node:22-slim AS dependencies
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
@@ -21,7 +21,7 @@ FROM development AS build
 RUN npm run build
 
 # --- runtime stage ---
-FROM node:20-slim AS runtime
+FROM node:22-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*

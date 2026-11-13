@@ -1,5 +1,22 @@
 import { z } from 'zod';
 
+export const SiteQuerySchema = z.object({ siteId: z.string().uuid() });
+export const AnalyticsRangeQuerySchema = SiteQuerySchema.extend({
+  from: z.string().datetime({ offset: true }).optional(),
+  to: z.string().datetime({ offset: true }).optional(),
+  path: z.string().max(512).default('/'),
+}).transform((query, ctx) => {
+  const to = query.to ?? new Date().toISOString();
+  const from = query.from ?? new Date(Date.parse(to) - 30 * 864e5).toISOString();
+  const duration = Date.parse(to) - Date.parse(from);
+  if (!Number.isFinite(duration) || duration < 0 || duration > 366 * 864e5) {
+    ctx.addIssue({ code: 'custom', message: 'Analytics range must be ordered and at most 366 days' });
+    return z.NEVER;
+  }
+  return { ...query, from, to };
+});
+export type AnalyticsRangeQuery = z.infer<typeof AnalyticsRangeQuerySchema>;
+
 export const ReportQuerySchema = z.object({
   siteId: z.string().uuid(),
   timeframe: z.enum(['7d', '30d', '6m', '1y']).default('30d'),

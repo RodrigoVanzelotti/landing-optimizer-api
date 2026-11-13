@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
-    "module": "CommonJS",
-    "moduleResolution": "Node",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "target": "ES2021",
     "lib": ["ES2021"],
     "declaration": true,
@@ -12,7 +12,7 @@
     "esModuleInterop": true,
     "sourceMap": true,
     "outDir": "./dist",
-    "baseUrl": "./",
+    "types": ["node"],
     "incremental": true,
     "skipLibCheck": true,
     "strict": true,

@@ -12,6 +12,9 @@ import type { AuthUser, JwtPayload } from '../../common/auth/auth.types';
 import { isPlatformOwner } from '../../common/auth/platform-owner.guard';
 import { writeAudit } from '../../common/audit/audit.module';
 
+// Equalize password verification work for unknown accounts; this is not a usable account.
+const DUMMY_HASH = '$argon2id$v=19$m=65536,t=3,p=4$04GVc3OKNqlhviLcCTV0xQ$/7vhKrhqgl/0rsnFhvtE4V2OKWBnOt0FbFfxRDyvZEU';
+
 export interface AuthResult {
   accessToken: string;
   refreshToken: string;
@@ -51,11 +54,8 @@ export class AuthService {
       include: { memberships: { where: { tenant: { archivedAt: null } }, orderBy: { createdAt: 'asc' }, take: 1 } },
     });
     const membership = user?.memberships[0];
-    if (!user || !user.passwordHash || !membership) {
-      throw new UnauthorizedException('Invalid credentials');
-    }
-    const ok = await argon2.verify(user.passwordHash, password);
-    if (!ok) throw new UnauthorizedException('Invalid credentials');
+    const ok = await argon2.verify(user?.passwordHash ?? DUMMY_HASH, password);
+    if (!user || !user.passwordHash || !membership || !ok) throw new UnauthorizedException('Invalid credentials');
 
     const result = await this.issue({
       userId: user.id,
@@ -69,7 +69,13 @@ export class AuthService {
   }
 
   async logout(user: AuthUser): Promise<void> {
-    await writeAudit(this.prisma, { tenantId: user.tenantId, actorUserId: user.userId, action: 'auth.logout', targetType: 'user', targetId: user.userId });
+    await this.prisma.$transaction(async tx => {
+      await tx.user.updateMany({
+        where: { id: user.userId, sessionVersion: user.sessionVersion ?? 0 },
+        data: { sessionVersion: { increment: 1 } },
+      });
+      await writeAudit(tx, { tenantId: user.tenantId, actorUserId: user.userId, action: 'auth.logout', targetType: 'user', targetId: user.userId });
+    });
   }
 
   async refresh(token: string): Promise<AuthResult> {

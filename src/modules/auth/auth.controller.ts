@@ -6,6 +6,7 @@ import {
   Post,
   Req,
   Res,
+  UseGuards,
 } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { AuthService, type AuthResult } from './auth.service';
@@ -21,10 +22,12 @@ import { Public } from '../../common/auth/public.decorator';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import type { AuthUser } from '../../common/auth/auth.types';
 import { PasswordResetService } from './password-reset.service';
+import { AuthBoundaryGuard } from './auth-boundary.guard';
 
 const REFRESH_COOKIE = '__Host-lo_refresh';
 
 @Controller('auth')
+@UseGuards(AuthBoundaryGuard)
 export class AuthController {
   constructor(
     private readonly auth: AuthService,

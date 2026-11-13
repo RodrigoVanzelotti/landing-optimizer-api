@@ -55,6 +55,7 @@ export class EventsService {
       RATE_WINDOW,
     );
     if (!allowed) return 'rate_limited';
+    if (!await this.redis.allow(`rl:evt:site:${site.siteId}`, 1200, RATE_WINDOW)) return 'rate_limited';
 
     // Structural page_map events are persisted relationally, not as analytics
     // rows (their nested payload would be destroyed by scrubProps anyway).

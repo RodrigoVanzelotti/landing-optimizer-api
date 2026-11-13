@@ -9,7 +9,7 @@ export const RegisterSchema = z.object({
 export type RegisterDto = z.infer<typeof RegisterSchema>;
 
 export const LoginSchema = z.object({
-  email: z.string().trim().email().transform((email) => email.toLowerCase()),
+  email: z.string().trim().email().max(254).transform((email) => email.toLowerCase()),
   password: z.string().min(1).max(200),
   rememberMe: z.boolean().default(false),
 });

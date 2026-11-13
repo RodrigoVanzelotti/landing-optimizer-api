@@ -3,6 +3,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisService } from '../../common/redis/redis.module';
 import { CryptoService } from '../../common/crypto/crypto.service';
 import { writeAudit } from '../../common/audit/audit.module';
+import type { Prisma } from '@prisma/client';
 
 /** Wire shape served to the snippet — mirrors snippet/src/types.ts SiteConfig. */
 export interface WireChange {
@@ -49,15 +50,28 @@ export class SiteConfigService {
 
   /** Rebuild, sign, cache, and return the config; bumps the site version. */
   async publish(siteId: string, actorUserId?: string): Promise<SignedSiteConfig> {
-    const site = await this.prisma.site.findUnique({ where: { id: siteId } });
+    const signed = await this.prisma.$transaction(async tx => {
+      // Serialize publishers so versions and compiled experiment sets stay ordered.
+      await tx.$queryRaw`SELECT id FROM site WHERE id = ${siteId} FOR UPDATE`;
+      const site = await tx.site.update({ where: { id: siteId }, data: { configVersion: { increment: 1 } } });
+      const result = await this.compile(siteId, tx);
+      if (actorUserId) await writeAudit(tx, { tenantId: site.tenantId, actorUserId, action: 'site.config_published', targetType: 'site', targetId: siteId, metadata: { version: result.version } });
+      return result;
+    });
+    await this.redis.set(cacheKey(siteId), JSON.stringify(signed), CONFIG_TTL_SECONDS);
+    return signed;
+  }
+
+  private async compile(siteId: string, db: Prisma.TransactionClient = this.prisma): Promise<SignedSiteConfig> {
+    const site = await db.site.findUnique({ where: { id: siteId } });
     if (!site) throw new Error('site not found');
 
-    const experiments = await this.prisma.experiment.findMany({
+    const experiments = await db.experiment.findMany({
       where: { siteId, status: 'running' },
       include: { variants: { include: { changes: true } } },
     });
 
-    const version = site.configVersion + 1;
+    const version = site.configVersion;
     const wireExperiments: WireExperiment[] = experiments.map((exp) => ({
       id: exp.id,
       allocation: Number(exp.allocation),
@@ -82,17 +96,7 @@ export class SiteConfigService {
       experiments: wireExperiments,
     };
     const sig = this.crypto.signConfig(site.privateKeyEnc, unsigned);
-    const signed: SignedSiteConfig = { ...unsigned, sig };
-
-    await this.prisma.$transaction(async tx => {
-      await tx.site.update({
-        where: { id: siteId },
-        data: { configVersion: version },
-      });
-      if (actorUserId) await writeAudit(tx, { tenantId: site.tenantId, actorUserId, action: 'site.config_published', targetType: 'site', targetId: siteId, metadata: { version } });
-    });
-    await this.redis.set(cacheKey(siteId), JSON.stringify(signed), CONFIG_TTL_SECONDS);
-    return signed;
+    return { ...unsigned, sig };
   }
 
   /** Read from cache; rebuild on miss. Returns null for unknown/paused sites. */
@@ -102,12 +106,15 @@ export class SiteConfigService {
     const cached = await this.redis.get(cacheKey(siteId));
     if (cached) {
       try {
-        return JSON.parse(cached) as SignedSiteConfig;
+        const config = JSON.parse(cached) as SignedSiteConfig;
+        if (config.siteId === siteId && config.version === site.configVersion) return config;
       } catch {
         /* fall through to rebuild */
       }
     }
-    return this.publish(siteId);
+    const config = await this.compile(siteId);
+    await this.redis.set(cacheKey(siteId), JSON.stringify(config), CONFIG_TTL_SECONDS);
+    return config;
   }
 }
 

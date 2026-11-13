@@ -24,18 +24,32 @@ function setup() {
     user: { findUnique: vi.fn().mockResolvedValue({ id: 'user', email: credentials.email, passwordHash: 'hash', sessionVersion: 0, memberships: [{ tenantId: 'tenant', role: 'viewer' }] }) },
     userMembership: { findUnique: vi.fn().mockResolvedValue({ role: 'viewer', user: { email: credentials.email, sessionVersion: 0 }, tenant: { archivedAt: null } }) },
   };
+  const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+  Object.assign(prisma.user, { updateMany });
+  Object.assign(prisma, { $transaction: async (fn: (tx: typeof prisma) => Promise<unknown>) => fn(prisma) });
   const jwt = new JwtService({ secret: 'session-lifetime-test-secret' });
   const auth = new AuthService(prisma as unknown as PrismaService, jwt, config as unknown as ConfigService<AppEnv, true>, {} as TeamService);
   const controller = new AuthController(auth, {} as PasswordResetService);
   const header = vi.fn();
   const reply = { header } as unknown as FastifyReply;
-  return { auth, controller, jwt, reply, header };
+  return { auth, controller, jwt, reply, header, prisma, updateMany };
 }
 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-12T12:00:00Z')); });
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('fixed login lifetime and optional persistence', () => {
+  it('revokes access and refresh tokens on all devices by advancing the account version', async () => {
+    const { auth, prisma, updateMany } = setup();
+    const login = await auth.login(credentials.email, credentials.password);
+    updateMany.mockImplementation(async () => {
+      prisma.userMembership.findUnique.mockResolvedValue({ role: 'viewer', user: { email: credentials.email, sessionVersion: 1 }, tenant: { archivedAt: null } });
+      return { count: 1 };
+    });
+    await auth.logout({ userId: 'user', tenantId: 'tenant', email: credentials.email, role: 'viewer', sessionVersion: 0 });
+    expect(updateMany).toHaveBeenCalledWith({ where: { id: 'user', sessionVersion: 0 }, data: { sessionVersion: { increment: 1 } } });
+    await expect(auth.refresh(login.refreshToken)).rejects.toMatchObject({ status: 401 });
+  });
   it('clears the logout cookie even when audit persistence fails', async () => {
     const { auth, controller, reply, header } = setup();
     vi.spyOn(auth, 'logout').mockRejectedValue(new Error('audit unavailable'));

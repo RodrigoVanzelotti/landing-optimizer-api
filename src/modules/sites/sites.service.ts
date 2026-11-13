@@ -71,6 +71,7 @@ export class SitesService {
     if (dto.samplingRate !== undefined) data.samplingRate = dto.samplingRate;
     if (dto.status !== undefined) data.status = dto.status;
     if (dto.settings !== undefined) data.settings = dto.settings as Prisma.InputJsonValue;
+    if (dto.samplingRate !== undefined || dto.status !== undefined) data.configVersion = { increment: 1 };
     return this.prisma.$transaction(async tx => {
       const site = await tx.site.update({ where: { id }, data });
       await writeAudit(tx, { tenantId: user.tenantId, actorUserId: user.userId, action: 'site.updated', targetType: 'site', targetId: id, metadata: { fields: Object.keys(data) } });

@@ -68,23 +68,27 @@ export class RedisService implements OnModuleDestroy {
    * Fixed-window token bucket. Returns true when the request is allowed.
    */
   async allow(key: string, limit: number, windowSeconds: number): Promise<boolean> {
-    if (!this.client) {
-      // shortcut: PostgreSQL handles V1 limits; use Redis when ingestion load grows.
-      await this.prisma.$executeRaw`DELETE FROM rate_limit WHERE expires_at < now()`;
-      const rows = await this.prisma.$queryRaw<{ count: number }[]>`
-        INSERT INTO rate_limit (key, count, expires_at)
-        VALUES (${key}, 1, now() + ${windowSeconds} * interval '1 second')
-        ON CONFLICT (key) DO UPDATE SET count = rate_limit.count + 1
-        RETURNING count`;
-      return rows[0]!.count <= limit;
+    if (this.client) {
+      try {
+        // Increment and expiry must be atomic, including when a request is interrupted.
+        const count = await this.client.eval(
+          "local n = redis.call('INCR', KEYS[1]); if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]); end; return n",
+          1, key, windowSeconds,
+        );
+        return Number(count) <= limit;
+      } catch {
+        // Keep shared protection when Redis is unavailable.
+      }
     }
-    try {
-      const count = await this.client.incr(key);
-      if (count === 1) await this.client.expire(key, windowSeconds);
-      return count <= limit;
-    } catch {
-      return true; // fail open for availability; edge has its own limits
-    }
+    await this.prisma.$executeRaw`DELETE FROM rate_limit WHERE expires_at < now()`;
+    const rows = await this.prisma.$queryRaw<{ count: number }[]>`
+      INSERT INTO rate_limit (key, count, expires_at)
+      VALUES (${key}, 1, now() + ${windowSeconds} * interval '1 second')
+      ON CONFLICT (key) DO UPDATE SET
+        count = CASE WHEN rate_limit.expires_at <= now() THEN 1 ELSE rate_limit.count + 1 END,
+        expires_at = CASE WHEN rate_limit.expires_at <= now() THEN EXCLUDED.expires_at ELSE rate_limit.expires_at END
+      RETURNING count`;
+    return rows[0]!.count <= limit;
   }
 
   onModuleDestroy(): void {

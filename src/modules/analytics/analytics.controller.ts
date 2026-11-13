@@ -3,7 +3,7 @@ import { AnalyticsService } from './analytics.service';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import type { AuthUser } from '../../common/auth/auth.types';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
-import { ReportQuerySchema, type ReportQuery } from './report';
+import { AnalyticsRangeQuerySchema, SiteQuerySchema, ReportQuerySchema, type AnalyticsRangeQuery, type ReportQuery } from './report';
 
 @Controller('analytics')
 export class AnalyticsController {
@@ -17,43 +17,32 @@ export class AnalyticsController {
   @Get('overview')
   overview(
     @CurrentUser() user: AuthUser,
-    @Query('siteId') siteId: string,
-    @Query('from') from?: string,
-    @Query('to') to?: string,
+    @Query(new ZodValidationPipe(AnalyticsRangeQuerySchema)) query: AnalyticsRangeQuery,
   ) {
-    const now = new Date();
-    const fromDate = from ?? new Date(now.getTime() - 30 * 864e5).toISOString();
-    const toDate = to ?? now.toISOString();
-    return this.analytics.overview(user.tenantId, siteId, fmt(fromDate), fmt(toDate));
+    return this.analytics.overview(user.tenantId, query.siteId, fmt(query.from), fmt(query.to));
   }
 
   @Get('funnel')
-  funnel(@CurrentUser() user: AuthUser, @Query('siteId') siteId: string) {
-    return this.analytics.funnel(user.tenantId, siteId);
+  funnel(@CurrentUser() user: AuthUser, @Query(new ZodValidationPipe(SiteQuerySchema)) query: { siteId: string }) {
+    return this.analytics.funnel(user.tenantId, query.siteId);
   }
 
   @Get('sections')
-  sections(@CurrentUser() user: AuthUser, @Query('siteId') siteId: string) {
-    return this.analytics.sections(user.tenantId, siteId);
+  sections(@CurrentUser() user: AuthUser, @Query(new ZodValidationPipe(SiteQuerySchema)) query: { siteId: string }) {
+    return this.analytics.sections(user.tenantId, query.siteId);
   }
 
   @Get('heatmap')
   heatmap(
     @CurrentUser() user: AuthUser,
-    @Query('siteId') siteId: string,
-    @Query('path') path?: string,
-    @Query('from') from?: string,
-    @Query('to') to?: string,
+    @Query(new ZodValidationPipe(AnalyticsRangeQuerySchema)) query: AnalyticsRangeQuery,
   ) {
-    const now = new Date();
-    const fromDate = from ?? new Date(now.getTime() - 30 * 864e5).toISOString();
-    const toDate = to ?? now.toISOString();
     return this.analytics.heatmap(
       user.tenantId,
-      siteId,
-      path && path.length > 0 ? path.slice(0, 512) : '/',
-      fmt(fromDate),
-      fmt(toDate),
+      query.siteId,
+      query.path || '/',
+      fmt(query.from),
+      fmt(query.to),
     );
   }
 

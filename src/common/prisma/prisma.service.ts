@@ -9,8 +9,8 @@ import { Logger } from '../logging/logger';
 const logger = Logger('PrismaService');
 
 /**
- * Prisma client wrapper. Sets the per-request `app.tenant_id` GUC used by
- * PostgreSQL Row-Level Security policies (see docs/SECURITY.md §2).
+ * Prisma client wrapper with an explicit tenant transaction helper.
+ * Services currently enforce tenant ownership; migrations do not enable RLS.
  */
 @Injectable()
 export class PrismaService

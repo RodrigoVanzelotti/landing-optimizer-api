@@ -35,7 +35,7 @@ const WireEventSchema = z.object({
   var: z.string().uuid().optional(),
   goal: z.string().max(64).optional(),
   val: z.number().finite().optional(),
-  p: z.record(z.unknown()).optional(),
+  p: z.record(z.string(), z.unknown()).optional(),
 });
 export type WireEvent = z.infer<typeof WireEventSchema>;
 
@@ -144,7 +144,7 @@ const PageMapNodeSchema = z.object({
 
 export const PageMapPayloadSchema = z.object({
   path: z.string().max(512),
-  counts: z.record(z.number().int().nonnegative()).optional(),
+  counts: z.record(z.string(), z.number().int().nonnegative()).optional(),
   nodes: z.array(PageMapNodeSchema).max(60),
 });
 export type PageMapPayload = z.infer<typeof PageMapPayloadSchema>;

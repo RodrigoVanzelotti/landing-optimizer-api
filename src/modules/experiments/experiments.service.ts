@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import type { Experiment, ExperimentStatus, Prisma } from '@prisma/client';
+import { Prisma, type Experiment, type ExperimentStatus } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AuditService } from '../../common/audit/audit.module';
 import { SiteConfigService } from '../sites/site-config.service';
@@ -130,7 +130,7 @@ export class ExperimentsService {
     if (dto.allocation !== undefined) data.allocation = dto.allocation;
     if (dto.targeting !== undefined) data.targeting = dto.targeting as Prisma.InputJsonValue;
     return this.prisma.$transaction(async tx => {
-      const updated = await tx.experiment.update({ where: { id }, data });
+      const updated = await this.updateCurrent(tx, experiment, data);
       await this.record(user, id, 'experiment.updated', { fields: Object.keys(data) }, tx);
       return updated;
     });
@@ -150,7 +150,7 @@ export class ExperimentsService {
           riskScore: experiment.riskScore,
         },
       });
-      const changed = await tx.experiment.update({ where: { id }, data: { status: 'pending_review' } });
+      const changed = await this.updateCurrent(tx, experiment, { status: 'pending_review' });
       await this.record(user, id, 'experiment.submitted', {}, tx);
       return changed;
     });
@@ -172,7 +172,7 @@ export class ExperimentsService {
           decidedAt: new Date(),
         },
       });
-      const changed = await tx.experiment.update({ where: { id }, data: { status: 'approved' } });
+      const changed = await this.updateCurrent(tx, experiment, { status: 'approved' });
       await this.record(user, id, 'experiment.approved', { reason: dto.reason }, tx);
       return changed;
     });
@@ -192,7 +192,7 @@ export class ExperimentsService {
           decidedAt: new Date(),
         },
       });
-      const changed = await tx.experiment.update({ where: { id }, data: { status: 'rejected' } });
+      const changed = await this.updateCurrent(tx, experiment, { status: 'rejected' });
       await this.record(user, id, 'experiment.rejected', { reason: dto.reason }, tx);
       return changed;
     });
@@ -203,10 +203,7 @@ export class ExperimentsService {
     const experiment = await this.requireExperiment(user.tenantId, id);
     this.assertTransition(experiment.status, 'scheduled');
     const updated = await this.prisma.$transaction(async tx => {
-      const changed = await tx.experiment.update({
-        where: { id },
-        data: { status: 'scheduled', startedAt: new Date(dto.startAt) },
-      });
+      const changed = await this.updateCurrent(tx, experiment, { status: 'scheduled', startedAt: new Date(dto.startAt) });
       await this.record(user, id, 'experiment.scheduled', { startAt: dto.startAt }, tx);
         return changed;
     });
@@ -217,10 +214,7 @@ export class ExperimentsService {
     const experiment = await this.requireExperiment(user.tenantId, id);
     this.assertTransition(experiment.status, 'running');
     const updated = await this.prisma.$transaction(async tx => {
-      const changed = await tx.experiment.update({
-        where: { id },
-        data: { status: 'running', startedAt: experiment.startedAt ?? new Date() },
-      });
+      const changed = await this.updateCurrent(tx, experiment, { status: 'running', startedAt: experiment.startedAt ?? new Date() });
       await this.record(user, id, 'experiment.started', {}, tx);
         return changed;
     });
@@ -232,10 +226,7 @@ export class ExperimentsService {
     const experiment = await this.requireExperiment(user.tenantId, id);
     this.assertTransition(experiment.status, 'paused');
     const updated = await this.prisma.$transaction(async tx => {
-      const changed = await tx.experiment.update({
-        where: { id },
-        data: { status: 'paused' },
-      });
+      const changed = await this.updateCurrent(tx, experiment, { status: 'paused' });
       await this.record(user, id, 'experiment.paused', {}, tx);
         return changed;
     });
@@ -246,14 +237,14 @@ export class ExperimentsService {
   async complete(user: AuthUser, id: string, dto: CompleteDto): Promise<Experiment> {
     const experiment = await this.requireExperiment(user.tenantId, id);
     this.assertTransition(experiment.status, 'completed');
+    if (dto.winnerVariantId && !await this.prisma.variant.findFirst({ where: { id: dto.winnerVariantId, experimentId: id }, select: { id: true } })) {
+      throw new BadRequestException('Winner must belong to this experiment');
+    }
     const updated = await this.prisma.$transaction(async tx => {
-      const changed = await tx.experiment.update({
-        where: { id },
-        data: {
-          status: 'completed',
-          endedAt: new Date(),
-          winnerVariantId: dto.winnerVariantId ?? null,
-        },
+      const changed = await this.updateCurrent(tx, experiment, {
+        status: 'completed',
+        endedAt: new Date(),
+        winnerVariantId: dto.winnerVariantId ?? null,
       });
       await this.record(user, id, 'experiment.completed', {
         winnerVariantId: dto.winnerVariantId,
@@ -268,10 +259,7 @@ export class ExperimentsService {
     const experiment = await this.requireExperiment(user.tenantId, id);
     this.assertTransition(experiment.status, 'rolled_back');
     const updated = await this.prisma.$transaction(async tx => {
-      const changed = await tx.experiment.update({
-        where: { id },
-        data: { status: 'rolled_back', endedAt: new Date() },
-      });
+      const changed = await this.updateCurrent(tx, experiment, { status: 'rolled_back', endedAt: new Date() });
       await this.record(user, id, 'experiment.rolled_back', {}, tx);
         return changed;
     });
@@ -286,10 +274,7 @@ export class ExperimentsService {
       throw new ConflictException(`Cannot kill experiment in status ${experiment.status}`);
     }
     const updated = await this.prisma.$transaction(async tx => {
-      const changed = await tx.experiment.update({
-        where: { id },
-        data: { status: 'paused' },
-      });
+      const changed = await this.updateCurrent(tx, experiment, { status: 'paused' });
       await this.record(user, id, 'experiment.killed', {}, tx);
         return changed;
     });
@@ -298,6 +283,22 @@ export class ExperimentsService {
   }
 
   /* ------------------------------- helpers -------------------------------- */
+
+  private async updateCurrent(tx: Prisma.TransactionClient, experiment: Experiment, data: Prisma.ExperimentUpdateInput): Promise<Experiment> {
+    try {
+      const updated = await tx.experiment.update({
+        where: { id: experiment.id, tenantId: experiment.tenantId, status: experiment.status, updatedAt: experiment.updatedAt }, data,
+      });
+      if (experiment.status === 'running' || updated.status === 'running') {
+        // Invalidate cached live config in the same commit, even if later publication fails.
+        await tx.site.update({ where: { id: experiment.siteId }, data: { configVersion: { increment: 1 } } });
+      }
+      return updated;
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') throw new ConflictException('Experiment changed; reload before retrying');
+      throw error;
+    }
+  }
 
   private assertTransition(from: ExperimentStatus, to: ExperimentStatus): void {
     if (!canTransition(from, to)) {

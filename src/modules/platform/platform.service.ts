@@ -42,6 +42,7 @@ export class PlatformService {
       if (tenant.name !== confirmation) throw new ConflictException('Digite o nome exato do cliente para confirmar.');
       if (id === user.tenantId || await tx.userMembership.findFirst({ where: { tenantId: id, userId: user.userId } })) throw new ConflictException('Você não pode arquivar um cliente ao qual sua própria conta pertence.');
       await tx.tenant.update({ where: { id }, data: { archivedAt: new Date() } });
+      await tx.user.updateMany({ where: { memberships: { some: { tenantId: id } } }, data: { sessionVersion: { increment: 1 } } });
       await writeAudit(tx, { tenantId: id, actorUserId: user.userId, action: 'tenant.archived', targetType: 'tenant', targetId: id });
     });
   }

@@ -3,8 +3,25 @@ import { ConfigService } from '@nestjs/config';
 import { safeReason } from '../../common/logging/request-context';
 import { Logger } from '../../common/logging/logger';
 import type { AppEnv } from '../../config/env';
+import { z } from 'zod';
+import { sanitizeSelector } from '../events/event-scrub';
 
 const logger = Logger('AiClient');
+
+const AnalyzeResultSchema = z.object({
+  model: z.string().min(1).max(200),
+  score: z.number().int().min(0).max(100),
+  suggestions: z.array(z.object({
+    kind: z.enum(['hypothesis', 'headline', 'cta', 'friction', 'section', 'score', 'plan']),
+    title: z.string().max(500),
+    detail: z.string().max(10000),
+    selector: z.string().max(256).refine(value => sanitizeSelector(value) === value, 'Unsafe suggestion selector').nullish().transform(value => value ?? undefined),
+    proposedValue: z.string().max(5000).nullish().transform(value => value ?? undefined),
+    originalValue: z.string().max(5000).nullish().transform(value => value ?? undefined),
+    expectedImpact: z.string().max(2000).nullish().transform(value => value ?? undefined),
+    riskLevel: z.enum(['low', 'medium', 'high']),
+  })).max(50),
+});
 
 export interface AnalyzeInput {
   siteId: string;
@@ -68,7 +85,7 @@ export class AiClient {
         });
         return null;
       }
-      return (await res.json()) as AnalyzeResult;
+      return AnalyzeResultSchema.parse(await res.json());
     } catch (err) {
       logger.warn('dependency_request_failed', {
         dependency: 'ai',

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   matchesContentType,
   MAX_IMAGE_BYTES,
+  imageDimensions,
   SnapshotEnvelopeSchema,
 } from '../src/modules/snapshots/snapshots.dto';
 
@@ -63,6 +64,27 @@ describe('SnapshotEnvelopeSchema', () => {
 });
 
 describe('matchesContentType', () => {
+  it('reads PNG, JPEG and WebP dimensions and safely rejects truncated headers', () => {
+    const png = Buffer.alloc(32);
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(png);
+    png.write('IHDR', 12); png.writeUInt32BE(800, 16); png.writeUInt32BE(600, 20);
+    expect(imageDimensions(png, 'image/png')).toEqual([800, 600]);
+    const jpeg = Buffer.from([255, 216, 255, 192, 0, 8, 8, 2, 88, 3, 32, 1]);
+    expect(imageDimensions(jpeg, 'image/jpeg')).toEqual([800, 600]);
+    const webp = Buffer.alloc(30);
+    webp.write('RIFF'); webp.write('WEBP', 8); webp.write('VP8X', 12);
+    webp.writeUIntLE(799, 24, 3); webp.writeUIntLE(599, 27, 3);
+    expect(imageDimensions(webp, 'image/webp')).toEqual([800, 600]);
+    webp.write('VP8 ', 12); Buffer.from([157, 1, 42]).copy(webp, 23);
+    webp.writeUInt16LE(800, 26); webp.writeUInt16LE(600, 28);
+    expect(imageDimensions(webp, 'image/webp')).toEqual([800, 600]);
+    webp.fill(0, 16); webp.write('VP8L', 12); webp[20] = 0x2f;
+    webp.writeUInt32LE(799 | (599 << 14), 21);
+    expect(imageDimensions(webp, 'image/webp')).toEqual([800, 600]);
+    for (let length = 0; length < 12; length++) expect(imageDimensions(jpeg.subarray(0, length), 'image/jpeg')).toBeNull();
+    expect(imageDimensions(png.subarray(0, 23), 'image/png')).toBeNull();
+    expect(imageDimensions(webp.subarray(0, 24), 'image/webp')).toBeNull();
+  });
   it('validates magic bytes per declared type', () => {
     expect(matchesContentType(pngBytes, 'image/png')).toBe(true);
     expect(matchesContentType(pngBytes, 'image/jpeg')).toBe(false);

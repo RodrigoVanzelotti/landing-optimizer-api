@@ -1,26 +1,17 @@
 import 'reflect-metadata';
-import {
-  FastifyAdapter,
-  NestFastifyApplication,
-} from '@nestjs/platform-fastify';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { NestFactory } from '@nestjs/core';
 import helmet from '@fastify/helmet';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { Logger } from './common/logging/logger';
 import { safeReason } from './common/logging/request-context';
+import { createHttpAdapter } from './http-adapter';
 
 const logger = Logger('Bootstrap');
 
 async function bootstrap(): Promise<void> {
-  const adapter = new FastifyAdapter({
-    trustProxy: true,
-    // Snapshots need 6 MB; event ingestion gets its own smaller limit below.
-    bodyLimit: 6 * 1024 * 1024,
-  });
-  adapter.getInstance().addHook('onRoute', (route) => {
-    if (route.url === '/v1/events') route.bodyLimit = 32 * 1024;
-  });
+  const adapter = createHttpAdapter();
 
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter, {
     logger,

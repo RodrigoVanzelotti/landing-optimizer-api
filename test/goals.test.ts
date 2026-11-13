@@ -43,7 +43,7 @@ describe('goal matcher validation', () => {
 });
 
 it('sets the primary goal on a draft with site ownership checks and freezes it after review', async () => {
-  const findUnique = vi.fn().mockResolvedValue({ tenantId: 'tenant', siteId: 'site', status: 'draft' });
+  const findUnique = vi.fn().mockResolvedValue({ id: 'experiment', tenantId: 'tenant', siteId: 'site', status: 'draft' });
   const findFirst = vi.fn().mockResolvedValue({ id: 'goal' });
   const update = vi.fn().mockResolvedValue({});
   const tx = { experiment: { findUnique, update }, conversionGoal: { findFirst } };
@@ -51,9 +51,9 @@ it('sets the primary goal on a draft with site ownership checks and freezes it a
   const user = { userId: 'editor', tenantId: 'tenant', email: 'editor@example.com', role: 'editor' as const };
   await service.update(user, 'experiment', UpdateExperimentSchema.parse({ primaryGoalId: 'goal' }));
   expect(findFirst).toHaveBeenCalledWith({ where: { id: 'goal', siteId: 'site' }, select: { id: true } });
-  expect(update).toHaveBeenCalledWith({ where: { id: 'experiment' }, data: { primaryGoal: { connect: { id: 'goal' } } } });
+  expect(update).toHaveBeenCalledWith({ where: { id: 'experiment', tenantId: 'tenant', status: 'draft', updatedAt: undefined }, data: { primaryGoal: { connect: { id: 'goal' } } } });
   await service.update(user, 'experiment', { primaryGoalId: null });
-  expect(update).toHaveBeenLastCalledWith({ where: { id: 'experiment' }, data: { primaryGoal: { disconnect: true } } });
+  expect(update).toHaveBeenLastCalledWith({ where: { id: 'experiment', tenantId: 'tenant', status: 'draft', updatedAt: undefined }, data: { primaryGoal: { disconnect: true } } });
   findFirst.mockResolvedValue(null);
   await expect(service.update(user, 'experiment', { primaryGoalId: 'foreign-goal' })).rejects.toThrow('Unknown conversion goal for this site');
   findUnique.mockResolvedValue({ tenantId: 'tenant', siteId: 'site', status: 'running' });

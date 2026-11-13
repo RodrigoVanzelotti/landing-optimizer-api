@@ -11,9 +11,8 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisService } from '../../common/redis/redis.module';
 import type { AuthUser } from '../../common/auth/auth.types';
 import { sanitizePath, sanitizeSelector } from '../events/event-scrub';
-import { SiteAuthService } from '../events/site-auth.service';
 import {
-  matchesContentType,
+  imageDimensions,
   MAX_IMAGE_BYTES,
   type SnapshotEnvelope,
   type SnapshotMeta,
@@ -29,28 +28,25 @@ const KEEP_PER_SITE = 20; // retained snapshots per site overall
 
 /**
  * Stores operator-captured page snapshots (screenshot + element geometry) for
- * the behavior heatmap. Upload uses the same public trust model as event
- * ingestion (ingest key + origin allowlist + rate limit); reads are
- * control-plane, tenant-scoped, and serve the image bytes from Postgres.
+ * the behavior heatmap. Uploads require a dashboard editor; every operation
+ * checks tenant ownership and serves raster image bytes from Postgres.
  */
 @Injectable()
 export class SnapshotsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
-    private readonly siteAuth: SiteAuthService,
     private readonly audit: AuditService,
   ) {}
 
   async ingest(
+    user: AuthUser,
     envelope: SnapshotEnvelope,
-    origin: string | undefined,
   ): Promise<'ok' | 'unauthorized' | 'rate_limited' | 'invalid'> {
-    const site = await this.siteAuth.resolveSite(envelope.siteId, envelope.ik);
-    if (!site || !site.active) return 'unauthorized';
-    if (!this.siteAuth.originAllowed(site, origin)) return 'unauthorized';
+    const site = await this.requireSite(user.tenantId, envelope.siteId);
+    if (site.status !== 'active') return 'unauthorized';
 
-    const allowed = await this.redis.allow(`rl:snap:${site.siteId}`, RATE_LIMIT, RATE_WINDOW);
+    const allowed = await this.redis.allow(`rl:snap:${site.id}`, RATE_LIMIT, RATE_WINDOW);
     if (!allowed) return 'rate_limited';
 
     let image: Buffer;
@@ -60,7 +56,8 @@ export class SnapshotsService {
       return 'invalid';
     }
     if (image.length === 0 || image.length > MAX_IMAGE_BYTES) return 'invalid';
-    if (!matchesContentType(image, envelope.contentType)) return 'invalid';
+    const dimensions = imageDimensions(image, envelope.contentType);
+    if (!dimensions || dimensions.some(value => value < 1) || dimensions[0] > envelope.width || dimensions[1] > envelope.height || dimensions[0] * dimensions[1] > 24_000_000) return 'invalid';
 
     // Unsafe selectors are dropped node-by-node, never stored.
     const nodes: SnapshotNode[] = envelope.nodes.flatMap((n) => {
@@ -73,7 +70,7 @@ export class SnapshotsService {
       const captured = await tx.pageSnapshot.create({
         data: {
           id: newId(),
-          siteId: site.siteId,
+          siteId: site.id,
           urlPath,
           width: envelope.width,
           height: envelope.height,
@@ -82,12 +79,12 @@ export class SnapshotsService {
           nodes: nodes as unknown as object,
         },
       });
-      await this.audit.log({ tenantId: site.tenantId, action: 'snapshot.created', targetType: 'page_snapshot', targetId: captured.id, metadata: { siteId: site.siteId, source: 'ingest_key' } }, tx);
+      await this.audit.log({ tenantId: site.tenantId, actorUserId: user.userId, action: 'snapshot.created', targetType: 'page_snapshot', targetId: captured.id, metadata: { siteId: site.id, source: 'dashboard' } }, tx);
     });
-    await this.prune(site.siteId, urlPath, site.tenantId);
+    await this.prune(site.id, urlPath, site.tenantId);
 
     logger.info('snapshot_stored', {
-      site_id: site.siteId,
+      site_id: site.id,
       path: urlPath,
       bytes: image.length,
       nodes: nodes.length,
@@ -216,10 +213,11 @@ export class SnapshotsService {
     }
   }
 
-  private async requireSite(tenantId: string, siteId: string): Promise<void> {
+  private async requireSite(tenantId: string, siteId: string) {
     if (!siteId) throw new BadRequestException('siteId is required');
     const site = await this.prisma.site.findUnique({ where: { id: siteId } });
     if (!site) throw new NotFoundException('Site not found');
     if (site.tenantId !== tenantId) throw new ForbiddenException('Cross-tenant access');
+    return site;
   }
 }

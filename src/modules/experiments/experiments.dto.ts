@@ -1,5 +1,11 @@
 import { z } from 'zod';
 import { isManualSelector } from '../events/event-scrub';
+import { ExperimentStatus } from '@prisma/client';
+
+export const ExperimentQuerySchema = z.object({
+  siteId: z.string().uuid().optional(),
+  status: z.nativeEnum(ExperimentStatus).optional(),
+});
 
 const ChangeOpEnum = z.enum([
   'set_text',
@@ -56,7 +62,7 @@ export const CreateExperimentSchema = z
     targeting: z
       .object({
         device: z.array(z.enum(['mobile', 'tablet', 'desktop'])).optional(),
-        query: z.record(z.string()).optional(),
+        query: z.record(z.string(), z.string()).optional(),
       })
       .optional(),
     variants: z.array(VariantSchema).min(2).max(6),
@@ -79,7 +85,7 @@ export const UpdateExperimentSchema = z.object({
   targeting: z
     .object({
       device: z.array(z.enum(['mobile', 'tablet', 'desktop'])).optional(),
-      query: z.record(z.string()).optional(),
+      query: z.record(z.string(), z.string()).optional(),
     })
     .optional(),
 });
@@ -87,7 +93,7 @@ export type UpdateExperimentDto = z.infer<typeof UpdateExperimentSchema>;
 
 export const ApproveSchema = z.object({
   reason: z.string().max(1000).optional(),
-  checklist: z.record(z.boolean()).optional(),
+  checklist: z.record(z.string(), z.boolean()).optional(),
   screenshotUrl: z.string().url().max(1000).optional(),
 });
 export type ApproveDto = z.infer<typeof ApproveSchema>;

@@ -9,8 +9,7 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
-import type { FastifyReply, FastifyRequest } from 'fastify';
-import { Public } from '../../common/auth/public.decorator';
+import type { FastifyReply } from 'fastify';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { Roles } from '../../common/auth/roles.decorator';
 import type { AuthUser } from '../../common/auth/auth.types';
@@ -23,26 +22,23 @@ import { SnapshotEnvelopeSchema, type SnapshotEnvelope } from './snapshots.dto';
 const logger = Logger('SnapshotsController');
 
 /**
- * Page snapshot endpoints. `POST /v1/snapshots` is the public upload surface
- * used by the operator-triggered lo-capture bundle (ingest key + origin
- * allowlist + rate limit, mirroring event ingestion). The nested
- * `/sites/:siteId/snapshots` routes are control-plane, JWT authenticated.
+ * Snapshots are uploaded by authenticated editors from the dashboard.
  */
 @Controller()
 export class SnapshotsController {
   constructor(private readonly snapshots: SnapshotsService) {}
 
-  @Public()
+  @Roles('editor')
   @Post('snapshots')
   @HttpCode(201)
   async ingest(
+    @CurrentUser() user: AuthUser,
     @Body(new ZodValidationPipe(SnapshotEnvelopeSchema)) envelope: SnapshotEnvelope,
     @Req() req: RequestContext,
     @Res({ passthrough: true }) res: FastifyReply,
-  ): Promise<void> {
-    const origin = headerOf(req, 'origin') ?? headerOf(req, 'referer');
-    const result = await this.snapshots.ingest(envelope, origin);
-    if (result === 'ok') return;
+  ): Promise<{ saved: true } | void> {
+    const result = await this.snapshots.ingest(user, envelope);
+    if (result === 'ok') return { saved: true };
     logger.warn('snapshot_rejected', {
       site_id: envelope.siteId,
       reason: result,
@@ -81,7 +77,7 @@ export class SnapshotsController {
     );
     void res
       .header('Content-Type', contentType)
-      .header('Cache-Control', 'private, max-age=300')
+      .header('Cache-Control', 'no-store')
       .send(image);
   }
 
@@ -95,9 +91,4 @@ export class SnapshotsController {
   ): Promise<void> {
     await this.snapshots.remove(user, siteId, snapshotId);
   }
-}
-
-function headerOf(req: FastifyRequest, name: string): string | undefined {
-  const v = req.headers[name];
-  return Array.isArray(v) ? v[0] : v;
 }

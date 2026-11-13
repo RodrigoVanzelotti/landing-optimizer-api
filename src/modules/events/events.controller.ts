@@ -42,7 +42,7 @@ export class EventsController {
     @Res({ passthrough: true }) res: FastifyReply,
   ): Promise<void> {
     const origin = headerOf(req, 'origin') ?? headerOf(req, 'referer');
-    const ip = clientIp(req);
+    const ip = req.ip;
     const result = await this.events.ingest(envelope, origin, ip);
     if (result === 'unauthorized') {
       logger.warn('ingest_rejected', {
@@ -81,10 +81,4 @@ export class EventsController {
 function headerOf(req: FastifyRequest, name: string): string | undefined {
   const v = req.headers[name];
   return Array.isArray(v) ? v[0] : v;
-}
-
-function clientIp(req: FastifyRequest): string | undefined {
-  const fwd = headerOf(req, 'x-forwarded-for');
-  if (fwd) return fwd.split(',')[0]?.trim();
-  return req.ip;
 }

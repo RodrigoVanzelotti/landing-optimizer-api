@@ -9,6 +9,7 @@ import type { AppEnv } from '../../config/env';
 import type { InviteUserDto, ReactivateUserDto } from './team.dto';
 import { ADMIN_LIMIT, USER_LIMIT, emailDomain, hashInvitationToken, isAdmin, newInvitation } from './invitation';
 import { writeAudit } from '../../common/audit/audit.module';
+import { isPlatformOwner } from '../../common/auth/platform-owner.guard';
 
 const active = () => ({ acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } });
 const memberSelect = { id: true, role: true, createdAt: true, user: { select: { id: true, name: true, email: true } } } as const;
@@ -50,6 +51,7 @@ export class TeamService {
   }
 
   async invite(user: AuthUser, input: InviteUserDto) {
+    if (isPlatformOwner(input.email)) throw new ForbiddenException('The platform account can only be provisioned by the operator');
     return this.prisma.$transaction(async (tx) => {
       await this.lock(tx, user.tenantId);
       const adminEmail = await this.requireAdmin(tx, user);
@@ -143,6 +145,7 @@ export class TeamService {
       const invitations = await tx.teamInvitation.findMany({ where: { tenantId: user.tenantId, invitedByUserId: target.userId, ...active() }, select: { id: true } });
       await tx.teamInvitation.updateMany({ where: { tenantId: user.tenantId, invitedByUserId: target.userId, ...active() }, data: { revokedAt: new Date() } });
       for (const invitation of invitations) await writeAudit(tx, { tenantId: user.tenantId, actorUserId: user.userId, action: 'team.invitation_revoked', targetType: 'team_invitation', targetId: invitation.id, metadata: { cause: 'member_removed', removedUserId: target.userId } });
+      await tx.user.updateMany({ where: { id: target.userId }, data: { sessionVersion: { increment: 1 } } });
       await tx.userMembership.delete({ where: { id: target.id, tenantId: user.tenantId } });
       await writeAudit(tx, { tenantId: user.tenantId, actorUserId: user.userId, action: 'team.member_removed', targetType: 'user', targetId: target.userId, metadata: { membershipId: target.id, role: target.role } });
     });
@@ -157,6 +160,7 @@ export class TeamService {
       await this.lock(tx, invitation.tenantId);
       const current = await tx.teamInvitation.findFirst({ where: { id: invitation.id, email, ...active() } });
       if (!current || !['admin', 'editor', 'viewer'].includes(current.role)) throw new ForbiddenException('Convite inválido ou expirado.');
+      if (current.invitedByUserId && isPlatformOwner(email)) throw new ForbiddenException('The platform account can only be provisioned by the operator');
       if (current.invitedByUserId) {
         const adminEmail = await this.requireAdmin(tx, { tenantId: current.tenantId, userId: current.invitedByUserId });
         if (emailDomain(email) !== emailDomain(adminEmail)) throw new ForbiddenException('O domínio deste convite não é autorizado.');

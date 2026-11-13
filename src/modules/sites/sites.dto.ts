@@ -14,7 +14,7 @@ export const UpdateSiteSchema = z.object({
   name: z.string().min(1).max(120).optional(),
   samplingRate: z.number().min(0).max(1).optional(),
   status: z.enum(['active', 'paused']).optional(),
-  settings: z.record(z.unknown()).optional(),
+  settings: z.record(z.string(), z.unknown()).optional(),
 });
 export type UpdateSiteDto = z.infer<typeof UpdateSiteSchema>;
 
@@ -26,7 +26,8 @@ export const AddOriginSchema = z.object({
     .refine((v) => {
       try {
         const u = new URL(v);
-        return u.pathname === '/' || u.pathname === '';
+        return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password &&
+          u.pathname === '/' && !u.search && !u.hash;
       } catch {
         return false;
       }

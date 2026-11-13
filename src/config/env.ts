@@ -44,6 +44,14 @@ const EnvSchema = z.object({
   INGEST_URL: z.string().default('http://localhost:3001/v1/events'),
   CONFIG_URL: z.string().default('http://localhost:3001/v1/config'),
   SDK_VERSION: z.string().default('0.1.0'),
+}).superRefine((env, ctx) => {
+  if (env.NODE_ENV !== 'production') return;
+  if (env.JWT_SECRET.length < 32 || env.JWT_SECRET === 'dev-secret-change-me-32-bytes-min') ctx.addIssue({ code: 'custom', path: ['JWT_SECRET'], message: 'Production requires a non-default JWT secret of at least 32 characters' });
+  if (!/^[A-Za-z0-9+/]{43}=$/.test(env.CONFIG_ENCRYPTION_KEY) || Buffer.from(env.CONFIG_ENCRYPTION_KEY, 'base64').length !== 32) {
+    ctx.addIssue({ code: 'custom', path: ['CONFIG_ENCRYPTION_KEY'], message: 'Production requires a base64-encoded 32-byte encryption key' });
+  }
+  if (env.AI_SERVICE_TOKEN === 'dev-internal-token' || env.AI_SERVICE_TOKEN.length < 32) ctx.addIssue({ code: 'custom', path: ['AI_SERVICE_TOKEN'], message: 'Production requires a service token of at least 32 characters' });
+  if (env.DASHBOARD_ORIGIN.split(',').some(origin => !origin.trim().startsWith('https://'))) ctx.addIssue({ code: 'custom', path: ['DASHBOARD_ORIGIN'], message: 'Production dashboard origins must use HTTPS' });
 });
 
 export type AppEnv = z.infer<typeof EnvSchema>;

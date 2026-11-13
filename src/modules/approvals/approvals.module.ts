@@ -11,7 +11,11 @@ import {
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import type { AuthUser } from '../../common/auth/auth.types';
-import type { ApprovalStatus } from '@prisma/client';
+import { ApprovalStatus } from '@prisma/client';
+import { z } from 'zod';
+import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
+
+export const ApprovalQuerySchema = z.object({ status: z.nativeEnum(ApprovalStatus).optional() });
 
 @Injectable()
 export class ApprovalsService {
@@ -25,7 +29,7 @@ export class ApprovalsService {
       },
       include: {
         experiment: {
-          include: { variants: { include: { changes: true } }, site: true },
+          include: { variants: { include: { changes: true } }, site: { select: { id: true, name: true, primaryDomain: true } } },
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -53,8 +57,8 @@ export class ApprovalsController {
   constructor(private readonly approvals: ApprovalsService) {}
 
   @Get()
-  list(@CurrentUser() user: AuthUser, @Query('status') status?: ApprovalStatus) {
-    return this.approvals.listQueue(user.tenantId, status);
+  list(@CurrentUser() user: AuthUser, @Query(new ZodValidationPipe(ApprovalQuerySchema)) query: { status?: ApprovalStatus }) {
+    return this.approvals.listQueue(user.tenantId, query.status);
   }
 
   @Get(':id')
