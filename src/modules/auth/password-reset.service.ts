@@ -6,12 +6,13 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { newId } from '../../common/crypto/ids';
 import { hashInvitationToken } from '../team/invitation';
 import type { AppEnv } from '../../config/env';
+import { writeAudit } from '../../common/audit/audit.module';
 
 @Injectable()
 export class PasswordResetService {
   constructor(private readonly prisma: PrismaService, private readonly config: ConfigService<AppEnv, true>) {}
 
-  async create(tenantId: string, userId: string) {
+  async create(tenantId: string, userId: string, actorUserId?: string) {
     return this.prisma.$transaction(async (tx) => {
       const membership = await tx.userMembership.findUnique({
         where: { tenantId_userId: { tenantId, userId } },
@@ -24,6 +25,7 @@ export class PasswordResetService {
       const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
       await tx.passwordReset.updateMany({ where: { userId, usedAt: null }, data: { usedAt: new Date() } });
       await tx.passwordReset.create({ data: { id: newId(), userId, tokenHash: hashInvitationToken(token), expiresAt } });
+      await writeAudit(tx, { tenantId, actorUserId, action: 'auth.password_reset_requested', targetType: 'user', targetId: userId });
       const url = new URL('/reset-password', this.config.get('DASHBOARD_ORIGIN', { infer: true }).split(',')[0]!.trim());
       url.searchParams.set('email', membership.user.email);
       url.hash = token;
@@ -45,6 +47,8 @@ export class PasswordResetService {
       });
       if (!consumed.count) throw new ForbiddenException('Link inválido ou expirado. Solicite um novo link.');
       await tx.user.update({ where: { id: reset.userId }, data: { passwordHash, sessionVersion: { increment: 1 } } });
+      const memberships = await tx.userMembership.findMany({ where: { userId: reset.userId }, select: { tenantId: true } });
+      for (const membership of memberships) await writeAudit(tx, { tenantId: membership.tenantId, actorUserId: reset.userId, action: 'auth.password_changed', targetType: 'user', targetId: reset.userId });
     });
   }
 }

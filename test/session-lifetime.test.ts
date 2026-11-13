@@ -20,6 +20,7 @@ const credentials = { email: 'ana@example.com', password: 'password' };
 function setup() {
   const config = { get: (key: string) => key === 'JWT_ACCESS_TTL' ? 900 : MONTH };
   const prisma = {
+    auditLog: { create: vi.fn().mockResolvedValue({}) },
     user: { findUnique: vi.fn().mockResolvedValue({ id: 'user', email: credentials.email, passwordHash: 'hash', sessionVersion: 0, memberships: [{ tenantId: 'tenant', role: 'viewer' }] }) },
     userMembership: { findUnique: vi.fn().mockResolvedValue({ role: 'viewer', user: { email: credentials.email, sessionVersion: 0 }, tenant: { archivedAt: null } }) },
   };
@@ -35,6 +36,12 @@ beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-12T12:
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('fixed login lifetime and optional persistence', () => {
+  it('clears the logout cookie even when audit persistence fails', async () => {
+    const { auth, controller, reply, header } = setup();
+    vi.spyOn(auth, 'logout').mockRejectedValue(new Error('audit unavailable'));
+    await expect(controller.logout(reply, { userId: 'user', tenantId: 'tenant', email: credentials.email, role: 'admin' })).rejects.toThrow('audit unavailable');
+    expect(header).toHaveBeenCalledWith('set-cookie', expect.stringContaining('Max-Age=0'));
+  });
   it('defaults to 30 days with persistence disabled and rejects a non-boolean preference', () => {
     expect(validateEnv({ DATABASE_URL: 'postgresql://localhost/test', JWT_SECRET: 'test-secret-long-enough' }).JWT_REFRESH_TTL).toBe(MONTH);
     expect(LoginSchema.parse(credentials).rememberMe).toBe(false);
@@ -78,7 +85,7 @@ describe('fixed login lifetime and optional persistence', () => {
     const refreshedCookie = header.mock.calls[1][1] as string;
     expect(refreshedCookie.includes('Max-Age=')).toBe(rememberMe);
     if (rememberMe) expect(refreshedCookie).toContain(`Max-Age=${MONTH - 86400}`);
-    controller.logout(reply);
+    await controller.logout(reply, { userId: 'user', tenantId: 'tenant', email: credentials.email, role: 'admin' });
     expect(header).toHaveBeenLastCalledWith('set-cookie', expect.stringContaining('Max-Age=0'));
   });
 

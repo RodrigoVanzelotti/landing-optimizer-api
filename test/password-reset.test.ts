@@ -12,8 +12,9 @@ vi.mock('argon2', () => ({ argon2id: 2, hash: vi.fn().mockResolvedValue('new-pas
 function setup() {
   const reset = { id: 'reset-id', userId: 'user-id', usedAt: null as Date | null, expiresAt: new Date(Date.now() + 3600000) };
   const tx = {
+    auditLog: { create: vi.fn().mockResolvedValue({}) },
     $queryRaw: vi.fn().mockResolvedValue([{ id: 'user-id' }]),
-    userMembership: { findUnique: vi.fn().mockResolvedValue({ tenant: { archivedAt: null }, user: { email: 'ana@acme.com' } }), findFirst: vi.fn().mockResolvedValue({ id: 'member' }) },
+    userMembership: { findUnique: vi.fn().mockResolvedValue({ tenant: { archivedAt: null }, user: { email: 'ana@acme.com' } }), findFirst: vi.fn().mockResolvedValue({ id: 'member' }), findMany: vi.fn().mockResolvedValue([{ tenantId: 'tenant-a' }]) },
     passwordReset: {
       findUnique: vi.fn().mockResolvedValue(reset), create: vi.fn().mockResolvedValue({}),
       updateMany: vi.fn().mockImplementation(async ({ where }: { where: { id?: string } }) => {

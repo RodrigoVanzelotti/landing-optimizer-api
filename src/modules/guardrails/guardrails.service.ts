@@ -33,26 +33,28 @@ export class GuardrailsService {
     await this.requireSite(user.tenantId, siteId);
     const clean = normalizeGuardrailRules(rules);
 
-    const saved = await this.prisma.brandGuardrail.upsert({
-      where: { siteId },
-      create: { id: newId(), siteId, rules: clean as unknown as Prisma.InputJsonValue },
-      update: { rules: clean as unknown as Prisma.InputJsonValue },
-    });
+    return this.prisma.$transaction(async tx => {
+      const saved = await tx.brandGuardrail.upsert({
+        where: { siteId },
+        create: { id: newId(), siteId, rules: clean as unknown as Prisma.InputJsonValue },
+        update: { rules: clean as unknown as Prisma.InputJsonValue },
+      });
 
-    await this.audit.log({
-      tenantId: user.tenantId,
-      actorUserId: user.userId,
-      action: 'guardrail.updated',
-      targetType: 'brand_guardrail',
-      targetId: siteId,
-      metadata: {
-        bannedWords: clean.bannedWords?.length ?? 0,
-        maxLength: clean.maxLength ?? null,
-        mustKeepClaims: clean.mustKeepClaims?.length ?? 0,
-      },
-    });
+      await this.audit.log({
+        tenantId: user.tenantId,
+        actorUserId: user.userId,
+        action: 'guardrail.updated',
+        targetType: 'brand_guardrail',
+        targetId: siteId,
+        metadata: {
+          bannedWords: clean.bannedWords?.length ?? 0,
+          maxLength: clean.maxLength ?? null,
+          mustKeepClaims: clean.mustKeepClaims?.length ?? 0,
+        },
+      }, tx);
 
-    return { siteId, rules: saved.rules as GuardrailRules, updatedAt: saved.updatedAt };
+      return { siteId, rules: saved.rules as GuardrailRules, updatedAt: saved.updatedAt };
+    });
   }
 
   private async requireSite(tenantId: string, siteId: string): Promise<void> {

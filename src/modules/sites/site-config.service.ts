@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisService } from '../../common/redis/redis.module';
 import { CryptoService } from '../../common/crypto/crypto.service';
+import { writeAudit } from '../../common/audit/audit.module';
 
 /** Wire shape served to the snippet — mirrors snippet/src/types.ts SiteConfig. */
 export interface WireChange {
@@ -47,7 +48,7 @@ export class SiteConfigService {
   ) {}
 
   /** Rebuild, sign, cache, and return the config; bumps the site version. */
-  async publish(siteId: string): Promise<SignedSiteConfig> {
+  async publish(siteId: string, actorUserId?: string): Promise<SignedSiteConfig> {
     const site = await this.prisma.site.findUnique({ where: { id: siteId } });
     if (!site) throw new Error('site not found');
 
@@ -83,9 +84,12 @@ export class SiteConfigService {
     const sig = this.crypto.signConfig(site.privateKeyEnc, unsigned);
     const signed: SignedSiteConfig = { ...unsigned, sig };
 
-    await this.prisma.site.update({
-      where: { id: siteId },
-      data: { configVersion: version },
+    await this.prisma.$transaction(async tx => {
+      await tx.site.update({
+        where: { id: siteId },
+        data: { configVersion: version },
+      });
+      if (actorUserId) await writeAudit(tx, { tenantId: site.tenantId, actorUserId, action: 'site.config_published', targetType: 'site', targetId: siteId, metadata: { version } });
     });
     await this.redis.set(cacheKey(siteId), JSON.stringify(signed), CONFIG_TTL_SECONDS);
     return signed;

@@ -5,7 +5,7 @@ import type { PrismaService } from '../src/common/prisma/prisma.service';
 import type { AppEnv } from '../src/config/env';
 import type { AuthUser } from '../src/common/auth/auth.types';
 import { TeamService } from '../src/modules/team/team.service';
-import { InviteUserSchema } from '../src/modules/team/team.dto';
+import { InviteUserSchema, ReactivateUserSchema } from '../src/modules/team/team.dto';
 import { hashInvitationToken, newInvitation } from '../src/modules/team/invitation';
 
 vi.mock('argon2', () => ({ argon2id: 2, hash: vi.fn().mockResolvedValue('password-hash') }));
@@ -15,6 +15,7 @@ const input = { name: 'Ana', email: 'ana@example.com', role: 'viewer' as const }
 function setup(options: { users?: number; admins?: number; pending?: number; adminPending?: number; actorRole?: string; targetRole?: string } = {}) {
   const invitation = { ...newInvitation(admin.tenantId, input, 'https://dashboard.example.com', admin.userId).data, acceptedAt: null as Date | null, revokedAt: null as Date | null };
   const tx = {
+    auditLog: { create: vi.fn().mockResolvedValue({}), findFirst: vi.fn().mockResolvedValue(null) },
     $queryRaw: vi.fn().mockResolvedValue([{ id: admin.tenantId }]),
     user: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
     userMembership: {
@@ -69,6 +70,7 @@ describe('tenant team invitations', () => {
     await expect(service.changeRole(admin, 'member', 'admin')).rejects.toMatchObject({ status: 403 });
     await expect(service.revoke(admin, 'invite')).rejects.toMatchObject({ status: 403 });
     await expect(service.removeMember(admin, 'member')).rejects.toMatchObject({ status: 403 });
+    await expect(service.reactivate(admin, input)).rejects.toMatchObject({ status: 403 });
     expect(tx.teamInvitation.create).not.toHaveBeenCalled();
     expect(tx.userMembership.delete).not.toHaveBeenCalled();
   });
@@ -93,7 +95,7 @@ describe('tenant team invitations', () => {
 
   it('rejects existing accounts and duplicate pending invites', async () => {
     const { service, tx } = setup();
-    tx.user.findFirst.mockResolvedValue({ id: 'existing' });
+    tx.user.findFirst.mockResolvedValue({ id: 'existing', memberships: [] });
     await expect(service.invite(admin, input)).rejects.toMatchObject({ status: 409 });
     tx.user.findFirst.mockResolvedValue(null);
     tx.teamInvitation.findFirst.mockResolvedValue({ id: 'duplicate' } as never);
@@ -133,6 +135,113 @@ describe('tenant team invitations', () => {
     await pending;
     expect(tx.$queryRaw.mock.calls[0]?.[0].join('')).toContain('FOR UPDATE');
     expect(tx.$queryRaw.mock.calls[0]?.[1]).toBe(admin.tenantId);
+  });
+});
+
+describe('reactivating former team members', () => {
+  function former(options: Parameters<typeof setup>[0] = {}) {
+    const context = setup(options);
+    context.tx.user.findFirst.mockResolvedValue({ id: 'existing', memberships: [] });
+    context.tx.teamInvitation.findFirst.mockResolvedValue({ id: 'accepted-invite' } as never);
+    return context;
+  }
+
+  it('offers reactivation without creating an invitation or restoring access before confirmation', async () => {
+    const { service, tx } = former();
+    const error = await service.invite(admin, input).catch(error => error);
+    expect(error.getStatus()).toBe(409);
+    expect(error.getResponse()).toMatchObject({ errors: { reactivationAvailable: true } });
+    expect(tx.userMembership.create).not.toHaveBeenCalled();
+    expect(tx.user.create).not.toHaveBeenCalled();
+    expect(tx.teamInvitation.create).not.toHaveBeenCalled();
+  });
+
+  it('restores only this workspace membership, with the chosen role and the existing account ID', async () => {
+    const { service, tx } = former();
+    await service.reactivate(admin, { email: input.email, role: 'editor' });
+    expect(tx.teamInvitation.findFirst).toHaveBeenCalledWith({
+      where: { tenantId: admin.tenantId, email: { equals: input.email, mode: 'insensitive' }, acceptedAt: { not: null } }, select: { id: true },
+    });
+    expect(tx.user.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      select: { id: true, memberships: { where: { tenantId: admin.tenantId }, select: { id: true } } },
+    }));
+    expect(tx.userMembership.create).toHaveBeenCalledWith({ data: expect.objectContaining({ tenantId: admin.tenantId, userId: 'existing', role: 'editor' }), select: expect.any(Object) });
+    expect(tx.user.create).not.toHaveBeenCalled();
+    expect(tx.userMembership.update).not.toHaveBeenCalled();
+    expect(tx.teamInvitation.create).not.toHaveBeenCalled();
+  });
+
+  it('does not offer or permit reactivation without confirmed prior access to this tenant', async () => {
+    const { service, tx } = former();
+    tx.teamInvitation.findFirst.mockResolvedValue(null);
+    for (const operation of [() => service.invite(admin, input), () => service.reactivate(admin, input)]) {
+      const error = await operation().catch(error => error);
+      expect(error.getStatus()).toBe(409);
+      expect(error.getResponse()).not.toHaveProperty('errors.reactivationAvailable');
+    }
+    expect(tx.userMembership.create).not.toHaveBeenCalled();
+  });
+
+  it('offers and confirms reactivation of a legacy account using its removal audit in this tenant', async () => {
+    const { service, tx } = former();
+    tx.teamInvitation.findFirst.mockResolvedValue(null);
+    tx.auditLog.findFirst.mockResolvedValue({ id: 'removal-audit' });
+    const error = await service.invite(admin, input).catch(error => error);
+    expect(error.getResponse()).toMatchObject({ errors: { reactivationAvailable: true } });
+    expect(tx.userMembership.create).not.toHaveBeenCalled();
+    await service.reactivate(admin, { email: input.email, role: 'editor' });
+    expect(tx.auditLog.findFirst).toHaveBeenCalledWith({
+      where: { tenantId: admin.tenantId, action: 'team.member_removed', targetType: 'user', targetId: 'existing' },
+      select: { id: true },
+    });
+    expect(tx.userMembership.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ userId: 'existing', role: 'editor' }) }));
+    expect(tx.user.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a current member and repeated confirmation without changing their role', async () => {
+    const { service, tx } = former();
+    await service.reactivate(admin, input);
+    tx.user.findFirst.mockResolvedValue({ id: 'existing', memberships: [{ id: 'restored' }] });
+    await expect(service.reactivate(admin, { ...input, role: 'admin' })).rejects.toMatchObject({ status: 409 });
+    const error = await service.invite(admin, input).catch(error => error);
+    expect(error.getStatus()).toBe(409);
+    expect(error.getResponse()).not.toHaveProperty('errors.reactivationAvailable');
+    expect(tx.userMembership.create).toHaveBeenCalledOnce();
+    expect(tx.userMembership.update).not.toHaveBeenCalled();
+  });
+
+  it('does not silently create a new account when the old account is gone', async () => {
+    const { service, tx } = former();
+    tx.user.findFirst.mockResolvedValue(null);
+    await expect(service.reactivate(admin, input)).rejects.toMatchObject({ status: 404 });
+    expect(tx.userMembership.create).not.toHaveBeenCalled();
+    expect(tx.user.create).not.toHaveBeenCalled();
+  });
+
+  it.each(['ana@other.com', 'ana@sub.example.com'])('enforces the same email-domain rule during confirmation: %s', async email => {
+    const { service, tx } = former();
+    await expect(service.reactivate(admin, { ...input, email })).rejects.toMatchObject({ status: 403 });
+    expect(tx.user.findFirst).not.toHaveBeenCalled();
+    expect(tx.userMembership.create).not.toHaveBeenCalled();
+  });
+
+  it.each([{ users: 10 }, { users: 9, pending: 1 }, { admins: 3 }, { admins: 2, adminPending: 1 }])('rechecks reserved capacity at confirmation: %j', async options => {
+    const { service, tx } = former(options);
+    await expect(service.reactivate(admin, { ...input, role: 'admin' })).rejects.toMatchObject({ status: 409 });
+    expect(tx.userMembership.create).not.toHaveBeenCalled();
+  });
+
+  it('does not restore access to an archived workspace', async () => {
+    const { service, tx } = former();
+    tx.$queryRaw.mockResolvedValue([]);
+    await expect(service.reactivate(admin, input)).rejects.toMatchObject({ status: 404 });
+    expect(tx.userMembership.create).not.toHaveBeenCalled();
+  });
+
+  it('normalizes the confirmed email, validates roles, and ignores account profile/password fields', () => {
+    expect(ReactivateUserSchema.parse({ email: ' ANA@EXAMPLE.COM ', role: 'editor', name: 'Changed', password: 'Changed' })).toEqual({ email: input.email, role: 'editor' });
+    expect(ReactivateUserSchema.safeParse({ email: input.email, role: 'owner' }).success).toBe(false);
+    expect(ReactivateUserSchema.safeParse({ email: 'not-email', role: 'viewer' }).success).toBe(false);
   });
 });
 

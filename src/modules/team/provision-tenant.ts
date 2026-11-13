@@ -6,14 +6,17 @@ import { newId } from '../../common/crypto/ids';
 import { InviteUserSchema, type InviteUserDto } from './team.dto';
 import { newInvitation } from './invitation';
 import { ConflictException } from '@nestjs/common';
+import { writeAudit } from '../../common/audit/audit.module';
 
-export async function provisionTenant(prisma: PrismaClient, tenantName: string, input: InviteUserDto, origin: string) {
+export async function provisionTenant(prisma: PrismaClient, tenantName: string, input: InviteUserDto, origin: string, actorUserId?: string) {
   return prisma.$transaction(async (tx) => {
     if (await tx.user.findFirst({ where: { email: { equals: input.email, mode: 'insensitive' } } })) throw new ConflictException('This email already has an account');
     const tenantId = newId();
     await tx.tenant.create({ data: { id: tenantId, name: tenantName, slug: `tenant-${tenantId}` } });
     const invitation = newInvitation(tenantId, { ...input, role: 'admin' }, origin);
     await tx.teamInvitation.create({ data: invitation.data });
+    await writeAudit(tx, { tenantId, actorUserId, action: 'tenant.created', targetType: 'tenant', targetId: tenantId });
+    await writeAudit(tx, { tenantId, actorUserId, action: 'team.invited', targetType: 'team_invitation', targetId: invitation.data.id, metadata: { role: 'admin' } });
     return { tenantId, invitationUrl: invitation.url, expiresAt: invitation.data.expiresAt };
   });
 }

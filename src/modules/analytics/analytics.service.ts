@@ -2,6 +2,7 @@ import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/commo
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ClickHouseService } from './clickhouse/clickhouse.service';
 import { analyzeExperiment, type VariantResult, type VariantStat } from './stats';
+import { buildReport, reportRange, SESSION_REPORT_SQL, type DailyMetric, type ReportQuery } from './report';
 
 export interface OverviewResult {
   pageViews: number;
@@ -36,6 +37,39 @@ export class AnalyticsService {
     private readonly prisma: PrismaService,
     private readonly ch: ClickHouseService,
   ) {}
+
+  async report(tenantId: string, siteId: string, timeframe: ReportQuery['timeframe']) {
+    const site = await this.requireSite(tenantId, siteId);
+    const range = reportRange(timeframe);
+    const retentionFrom = this.ch.retentionDays === null ? 0 : Date.parse(range.to) - this.ch.retentionDays * 864e5;
+    const createdDay = new Date(site.createdAt).toISOString().slice(0, 10) + 'T00:00:00.000Z';
+    const availableFrom = new Date(Math.max(Date.parse(createdDay), retentionFrom)).toISOString();
+    const params = {
+      tenantId, siteId,
+      from: range.from.replace('T', ' ').replace('Z', ''),
+      to: range.to.replace('T', ' ').replace('Z', ''),
+      previousFrom: (range.previousFrom > availableFrom ? range.previousFrom : availableFrom).replace('T', ' ').replace('Z', ''),
+    };
+    const [events, sessions, sections] = await Promise.all([
+      this.ch.query<DailyMetric>(
+        `SELECT CAST(event_time AS DATE) AS date, event_name AS metric, count() AS count
+         FROM events WHERE tenant_id = {tenantId:UUID} AND site_id = {siteId:UUID}
+           AND event_time >= {previousFrom:DateTime64} AND event_time < {to:DateTime64} AND is_bot = 0
+         GROUP BY date, event_name ORDER BY date`, params),
+      this.ch.query<DailyMetric>(SESSION_REPORT_SQL, params),
+      this.ch.query<{ section: string; views: string; deadClicks: string; rageClicks: string; dwellMs: string }>(
+        `SELECT section_id AS section, countIf(event_name = 'section_view') AS views,
+                countIf(event_name = 'dead_click') AS "deadClicks", countIf(event_name = 'rage_click') AS "rageClicks",
+                sum(dwell_ms) AS "dwellMs"
+         FROM events WHERE tenant_id = {tenantId:UUID} AND site_id = {siteId:UUID}
+           AND event_time >= {from:DateTime64} AND event_time >= {previousFrom:DateTime64}
+           AND event_time < {to:DateTime64} AND is_bot = 0 AND section_id != ''
+         GROUP BY section_id ORDER BY views DESC`, params),
+    ]);
+    return buildReport(timeframe, range, availableFrom, events, sessions, sections.map(row => ({
+      section: row.section, views: Number(row.views), deadClicks: Number(row.deadClicks), rageClicks: Number(row.rageClicks), dwellMs: Number(row.dwellMs),
+    })));
+  }
 
   async overview(
     tenantId: string,
@@ -237,9 +271,10 @@ export class AnalyticsService {
     return { experimentId, variants: analyzeExperiment(stats) };
   }
 
-  private async requireSite(tenantId: string, siteId: string): Promise<void> {
+  private async requireSite(tenantId: string, siteId: string) {
     const site = await this.prisma.site.findUnique({ where: { id: siteId } });
     if (!site) throw new NotFoundException('Site not found');
     if (site.tenantId !== tenantId) throw new ForbiddenException('Cross-tenant access');
+    return site;
   }
 }

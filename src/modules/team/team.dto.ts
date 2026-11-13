@@ -7,4 +7,6 @@ export const InviteUserSchema = z.object({
   role: TeamRoleSchema.default('viewer'),
 });
 export type InviteUserDto = z.infer<typeof InviteUserSchema>;
+export const ReactivateUserSchema = InviteUserSchema.pick({ email: true, role: true });
+export type ReactivateUserDto = z.infer<typeof ReactivateUserSchema>;
 export const ChangeRoleSchema = z.object({ role: TeamRoleSchema });

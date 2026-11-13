@@ -36,7 +36,7 @@ export class SitesController {
     @CurrentUser() user: AuthUser,
     @Body(new ZodValidationPipe(CreateSiteSchema)) dto: CreateSiteDto,
   ) {
-    return this.sites.create(user.tenantId, dto);
+    return this.sites.create(user, dto);
   }
 
   @Get()
@@ -56,7 +56,7 @@ export class SitesController {
     @Param('id') id: string,
     @Body(new ZodValidationPipe(UpdateSiteSchema)) dto: UpdateSiteDto,
   ) {
-    return this.sites.update(user.tenantId, id, dto);
+    return this.sites.update(user, id, dto);
   }
 
   @Get(':id/snippet')
@@ -77,7 +77,7 @@ export class SitesController {
     @Param('id') id: string,
     @Body(new ZodValidationPipe(AddOriginSchema)) dto: AddOriginDto,
   ): Promise<void> {
-    await this.sites.addOrigin(user.tenantId, id, dto);
+    await this.sites.addOrigin(user, id, dto);
   }
 
   @Delete(':id/origins/:originId')
@@ -88,7 +88,7 @@ export class SitesController {
     @Param('id') id: string,
     @Param('originId') originId: string,
   ): Promise<void> {
-    await this.sites.removeOrigin(user.tenantId, id, originId);
+    await this.sites.removeOrigin(user, id, originId);
   }
 
   @Post(':id/config/publish')
@@ -96,6 +96,6 @@ export class SitesController {
   async publish(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     // Ownership is enforced by SitesService.get before publishing.
     await this.sites.get(user.tenantId, id);
-    return this.siteConfig.publish(id);
+    return this.siteConfig.publish(id, user.userId);
   }
 }

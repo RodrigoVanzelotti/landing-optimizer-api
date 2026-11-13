@@ -4,7 +4,7 @@ import { provisionTenant } from '../src/modules/team/provision-tenant';
 
 describe('operator-only tenant provisioning', () => {
   function setup() {
-    const tx = { user: { findFirst: vi.fn().mockResolvedValue(null) }, tenant: { create: vi.fn() }, teamInvitation: { create: vi.fn() } };
+    const tx = { auditLog: { create: vi.fn().mockResolvedValue({}) }, user: { findFirst: vi.fn().mockResolvedValue(null) }, tenant: { create: vi.fn() }, teamInvitation: { create: vi.fn() } };
     const prisma = { $transaction: vi.fn(async (fn: (client: typeof tx) => Promise<unknown>) => fn(tx)) };
     return { tx, prisma: prisma as unknown as PrismaClient };
   }

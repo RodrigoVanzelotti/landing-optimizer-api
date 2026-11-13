@@ -62,7 +62,7 @@ export class ExperimentsController {
     @Param('id') id: string,
     @Body(new ZodValidationPipe(UpdateExperimentSchema)) dto: UpdateExperimentDto,
   ) {
-    return this.experiments.update(user.tenantId, id, dto);
+    return this.experiments.update(user, id, dto);
   }
 
   @Post(':id/submit')

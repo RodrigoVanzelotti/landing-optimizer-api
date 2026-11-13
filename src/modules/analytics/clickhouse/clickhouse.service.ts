@@ -49,6 +49,10 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
     return this.config.get('ANALYTICS_BACKEND', { infer: true }) === 'postgres';
   }
 
+  get retentionDays(): number | null {
+    return this.postgres ? null : 180;
+  }
+
   onModuleInit(): void {
     if (this.postgres) return;
     this.client = createClient({

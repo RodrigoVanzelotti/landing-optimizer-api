@@ -21,10 +21,10 @@ export class PlatformController {
   get(@Param('id') id: string) { return this.platform.get(id); }
 
   @Post()
-  create(@Body(new ZodValidationPipe(CreateTenantSchema)) dto: CreateTenantDto) { return this.platform.create(dto); }
+  create(@CurrentUser() user: AuthUser, @Body(new ZodValidationPipe(CreateTenantSchema)) dto: CreateTenantDto) { return this.platform.create(dto, user.userId); }
 
   @Post(':id/users/:userId/password-reset')
-  resetPassword(@Param('id') id: string, @Param('userId') userId: string) { return this.passwords.create(id, userId); }
+  resetPassword(@CurrentUser() user: AuthUser, @Param('id') id: string, @Param('userId') userId: string) { return this.passwords.create(id, userId, user.userId); }
 
   @Post(':id/archive')
   @HttpCode(204)
@@ -34,5 +34,5 @@ export class PlatformController {
 
   @Post(':id/restore')
   @HttpCode(204)
-  restore(@Param('id') id: string) { return this.platform.restore(id); }
+  restore(@CurrentUser() user: AuthUser, @Param('id') id: string) { return this.platform.restore(id, user.userId); }
 }

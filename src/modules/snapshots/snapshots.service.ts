@@ -69,19 +69,22 @@ export class SnapshotsService {
     });
 
     const urlPath = sanitizePath(envelope.path);
-    await this.prisma.pageSnapshot.create({
-      data: {
-        id: newId(),
-        siteId: site.siteId,
-        urlPath,
-        width: envelope.width,
-        height: envelope.height,
-        contentType: envelope.contentType,
-        image,
-        nodes: nodes as unknown as object,
-      },
+    await this.prisma.$transaction(async tx => {
+      const captured = await tx.pageSnapshot.create({
+        data: {
+          id: newId(),
+          siteId: site.siteId,
+          urlPath,
+          width: envelope.width,
+          height: envelope.height,
+          contentType: envelope.contentType,
+          image,
+          nodes: nodes as unknown as object,
+        },
+      });
+      await this.audit.log({ tenantId: site.tenantId, action: 'snapshot.created', targetType: 'page_snapshot', targetId: captured.id, metadata: { siteId: site.siteId, source: 'ingest_key' } }, tx);
     });
-    await this.prune(site.siteId, urlPath);
+    await this.prune(site.siteId, urlPath, site.tenantId);
 
     logger.info('snapshot_stored', {
       site_id: site.siteId,
@@ -173,19 +176,21 @@ export class SnapshotsService {
       select: { siteId: true, urlPath: true },
     });
     if (!row || row.siteId !== siteId) throw new NotFoundException('Snapshot not found');
-    await this.prisma.pageSnapshot.delete({ where: { id: snapshotId } });
-    await this.audit.log({
-      tenantId: user.tenantId,
-      actorUserId: user.userId,
-      action: 'snapshot.deleted',
-      targetType: 'page_snapshot',
-      targetId: snapshotId,
-      metadata: { siteId, urlPath: row.urlPath },
+    await this.prisma.$transaction(async tx => {
+      await tx.pageSnapshot.delete({ where: { id: snapshotId } });
+      await this.audit.log({
+        tenantId: user.tenantId,
+        actorUserId: user.userId,
+        action: 'snapshot.deleted',
+        targetType: 'page_snapshot',
+        targetId: snapshotId,
+        metadata: { siteId, urlPath: row.urlPath },
+      }, tx);
     });
   }
 
   /** Bound stored bytes: keep the newest N per path and M per site. */
-  private async prune(siteId: string, urlPath: string): Promise<void> {
+  private async prune(siteId: string, urlPath: string, tenantId: string): Promise<void> {
     try {
       const perPath = await this.prisma.pageSnapshot.findMany({
         where: { siteId, urlPath },
@@ -201,7 +206,10 @@ export class SnapshotsService {
       });
       const stale = [...new Set([...perPath, ...perSite].map((r) => r.id))];
       if (stale.length > 0) {
-        await this.prisma.pageSnapshot.deleteMany({ where: { id: { in: stale } } });
+        await this.prisma.$transaction(async tx => {
+          const removed = await tx.pageSnapshot.deleteMany({ where: { id: { in: stale } } });
+          if (removed.count) await this.audit.log({ tenantId, action: 'snapshot.pruned', targetType: 'site', targetId: siteId, metadata: { snapshotIds: stale, count: removed.count } }, tx);
+        });
       }
     } catch {
       // Retention is best-effort; the next successful upload prunes again.

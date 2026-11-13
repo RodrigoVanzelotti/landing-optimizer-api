@@ -6,8 +6,9 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { newId } from '../../common/crypto/ids';
 import type { AuthUser } from '../../common/auth/auth.types';
 import type { AppEnv } from '../../config/env';
-import type { InviteUserDto } from './team.dto';
+import type { InviteUserDto, ReactivateUserDto } from './team.dto';
 import { ADMIN_LIMIT, USER_LIMIT, emailDomain, hashInvitationToken, isAdmin, newInvitation } from './invitation';
+import { writeAudit } from '../../common/audit/audit.module';
 
 const active = () => ({ acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } });
 const memberSelect = { id: true, role: true, createdAt: true, user: { select: { id: true, name: true, email: true } } } as const;
@@ -53,13 +54,51 @@ export class TeamService {
       await this.lock(tx, user.tenantId);
       const adminEmail = await this.requireAdmin(tx, user);
       if (emailDomain(input.email) !== emailDomain(adminEmail)) throw new ForbiddenException('Convide apenas pessoas com o mesmo domínio de e-mail que o seu.');
-      if (await tx.user.findFirst({ where: { email: { equals: input.email, mode: 'insensitive' } } })) throw new ConflictException('Este e-mail já tem uma conta.');
+      if (await this.formerMember(tx, user.tenantId, input.email)) throw new ConflictException({
+        message: 'Esta conta foi preservada. Deseja reativar o acesso a este workspace?',
+        errors: { reactivationAvailable: true },
+      });
       if (await tx.teamInvitation.findFirst({ where: { tenantId: user.tenantId, email: input.email, ...active() } })) throw new ConflictException('Já existe um convite pendente para este e-mail.');
       await this.capacity(tx, user.tenantId, input.role, true);
       const origin = this.config.get('DASHBOARD_ORIGIN', { infer: true }).split(',')[0]!.trim();
       const { data, url } = newInvitation(user.tenantId, input, origin, user.userId);
       const invitation = await tx.teamInvitation.create({ data, select: inviteSelect });
+      await writeAudit(tx, { tenantId: user.tenantId, actorUserId: user.userId, action: 'team.invited', targetType: 'team_invitation', targetId: invitation.id, metadata: { role: input.role } });
       return { ...invitation, url };
+    });
+  }
+
+  private async formerMember(tx: Prisma.TransactionClient, tenantId: string, email: string) {
+    const account = await tx.user.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' } },
+      select: { id: true, memberships: { where: { tenantId }, select: { id: true } } },
+    });
+    if (!account) return null;
+    if (account.memberships.length) throw new ConflictException('Esta pessoa já faz parte deste workspace.');
+    // Legacy accounts may predate invitations; removal audits also prove prior tenant access.
+    const priorAccess = await tx.teamInvitation.findFirst({
+      where: { tenantId, email: { equals: email, mode: 'insensitive' }, acceptedAt: { not: null } },
+      select: { id: true },
+    });
+    const removed = !priorAccess && await tx.auditLog.findFirst({
+      where: { tenantId, action: 'team.member_removed', targetType: 'user', targetId: account.id },
+      select: { id: true },
+    });
+    if (!priorAccess && !removed) throw new ConflictException('Este e-mail já tem uma conta. Não há vínculo anterior confirmado com este workspace.');
+    return account;
+  }
+
+  async reactivate(user: AuthUser, input: ReactivateUserDto) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.lock(tx, user.tenantId);
+      const adminEmail = await this.requireAdmin(tx, user);
+      if (emailDomain(input.email) !== emailDomain(adminEmail)) throw new ForbiddenException('Reative apenas pessoas com o mesmo domínio de e-mail que o seu.');
+      const account = await this.formerMember(tx, user.tenantId, input.email);
+      if (!account) throw new NotFoundException('Conta não encontrada. Gere um novo convite para este e-mail.');
+      await this.capacity(tx, user.tenantId, input.role, true);
+      const member = await tx.userMembership.create({ data: { id: newId(), tenantId: user.tenantId, userId: account.id, role: input.role }, select: memberSelect });
+      await writeAudit(tx, { tenantId: user.tenantId, actorUserId: user.userId, action: 'team.member_reactivated', targetType: 'user', targetId: account.id, metadata: { role: input.role } });
+      return member;
     });
   }
 
@@ -69,6 +108,7 @@ export class TeamService {
       await this.requireAdmin(tx, user);
       const result = await tx.teamInvitation.updateMany({ where: { id, tenantId: user.tenantId, ...active() }, data: { revokedAt: new Date() } });
       if (!result.count) throw new NotFoundException('Convite não encontrado ou já encerrado.');
+      await writeAudit(tx, { tenantId: user.tenantId, actorUserId: user.userId, action: 'team.invitation_revoked', targetType: 'team_invitation', targetId: id });
     });
   }
 
@@ -83,7 +123,9 @@ export class TeamService {
         if (admins <= 1) throw new ConflictException('O cliente precisa manter pelo menos um administrador.');
       }
       if (!isAdmin(target.role) && isAdmin(role)) await this.capacity(tx, user.tenantId, role, false);
-      return tx.userMembership.update({ where: { id: target.id }, data: { role }, select: memberSelect });
+      const member = await tx.userMembership.update({ where: { id: target.id }, data: { role }, select: memberSelect });
+      await writeAudit(tx, { tenantId: user.tenantId, actorUserId: user.userId, action: 'team.role_changed', targetType: 'user', targetId: target.userId, metadata: { before: target.role, after: role } });
+      return member;
     });
   }
 
@@ -98,8 +140,11 @@ export class TeamService {
         const admins = await tx.userMembership.count({ where: { tenantId: user.tenantId, role: { in: ['admin', 'owner'] } } });
         if (admins <= 1) throw new ConflictException('O cliente precisa manter pelo menos um administrador.');
       }
+      const invitations = await tx.teamInvitation.findMany({ where: { tenantId: user.tenantId, invitedByUserId: target.userId, ...active() }, select: { id: true } });
       await tx.teamInvitation.updateMany({ where: { tenantId: user.tenantId, invitedByUserId: target.userId, ...active() }, data: { revokedAt: new Date() } });
+      for (const invitation of invitations) await writeAudit(tx, { tenantId: user.tenantId, actorUserId: user.userId, action: 'team.invitation_revoked', targetType: 'team_invitation', targetId: invitation.id, metadata: { cause: 'member_removed', removedUserId: target.userId } });
       await tx.userMembership.delete({ where: { id: target.id, tenantId: user.tenantId } });
+      await writeAudit(tx, { tenantId: user.tenantId, actorUserId: user.userId, action: 'team.member_removed', targetType: 'user', targetId: target.userId, metadata: { membershipId: target.id, role: target.role } });
     });
   }
 
@@ -124,6 +169,8 @@ export class TeamService {
       await tx.user.create({ data: { id: userId, email, name, passwordHash } });
       await tx.userMembership.create({ data: { id: newId(), tenantId: current.tenantId, userId, role: current.role } });
       await tx.teamInvitation.update({ where: { id: current.id }, data: { acceptedAt: new Date() } });
+      await writeAudit(tx, { tenantId: current.tenantId, actorUserId: current.invitedByUserId ?? userId, action: 'team.member_added', targetType: 'user', targetId: userId, metadata: { invitationId: current.id, acceptedByUserId: userId, role: current.role } });
+      await writeAudit(tx, { tenantId: current.tenantId, actorUserId: userId, action: 'team.invitation_accepted', targetType: 'team_invitation', targetId: current.id });
       return { userId, tenantId: current.tenantId, email, role: current.role };
     });
   }

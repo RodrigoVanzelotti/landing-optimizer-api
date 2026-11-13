@@ -3,7 +3,7 @@ import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { Roles } from '../../common/auth/roles.decorator';
 import type { AuthUser } from '../../common/auth/auth.types';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
-import { ChangeRoleSchema, InviteUserSchema, type InviteUserDto } from './team.dto';
+import { ChangeRoleSchema, InviteUserSchema, ReactivateUserSchema, type InviteUserDto, type ReactivateUserDto } from './team.dto';
 import { TeamService } from './team.service';
 
 @Controller('team')
@@ -18,6 +18,12 @@ export class TeamController {
   @Roles('admin')
   invite(@CurrentUser() user: AuthUser, @Body(new ZodValidationPipe(InviteUserSchema)) dto: InviteUserDto) {
     return this.team.invite(user, dto);
+  }
+
+  @Post('reactivations')
+  @Roles('admin')
+  reactivate(@CurrentUser() user: AuthUser, @Body(new ZodValidationPipe(ReactivateUserSchema)) dto: ReactivateUserDto) {
+    return this.team.reactivate(user, dto);
   }
 
   @Delete('invitations/:id')

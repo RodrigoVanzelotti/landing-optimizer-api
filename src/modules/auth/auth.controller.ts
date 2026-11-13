@@ -50,7 +50,7 @@ export class AuthController {
     @Res({ passthrough: true }) res: FastifyReply,
   ): Promise<void> {
     await this.passwords.complete(dto.token, dto.password);
-    this.logout(res);
+    this.clearRefreshCookie(res);
   }
 
   @Public()
@@ -80,7 +80,12 @@ export class AuthController {
 
   @Post('logout')
   @HttpCode(204)
-  logout(@Res({ passthrough: true }) res: FastifyReply): void {
+  async logout(@Res({ passthrough: true }) res: FastifyReply, @CurrentUser() user: AuthUser): Promise<void> {
+    try { await this.auth.logout(user); }
+    finally { this.clearRefreshCookie(res); }
+  }
+
+  private clearRefreshCookie(res: FastifyReply): void {
     void res.header(
       'set-cookie',
       `${REFRESH_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`,

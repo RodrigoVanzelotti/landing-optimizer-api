@@ -5,6 +5,7 @@ import type { AppEnv } from '../../config/env';
 import type { AuthUser } from '../../common/auth/auth.types';
 import { provisionTenant } from '../team/provision-tenant';
 import type { CreateTenantDto } from './platform.dto';
+import { writeAudit } from '../../common/audit/audit.module';
 
 @Injectable()
 export class PlatformService {
@@ -28,9 +29,9 @@ export class PlatformService {
     return tenant;
   }
 
-  create(input: CreateTenantDto) {
+  create(input: CreateTenantDto, actorUserId?: string) {
     const origin = this.config.get('DASHBOARD_ORIGIN', { infer: true }).split(',')[0]!.trim();
-    return provisionTenant(this.prisma, input.tenantName, { name: input.name, email: input.email, role: 'admin' }, origin);
+    return provisionTenant(this.prisma, input.tenantName, { name: input.name, email: input.email, role: 'admin' }, origin, actorUserId);
   }
 
   async archive(user: AuthUser, id: string, confirmation: string): Promise<void> {
@@ -41,10 +42,14 @@ export class PlatformService {
       if (tenant.name !== confirmation) throw new ConflictException('Digite o nome exato do cliente para confirmar.');
       if (id === user.tenantId || await tx.userMembership.findFirst({ where: { tenantId: id, userId: user.userId } })) throw new ConflictException('Você não pode arquivar um cliente ao qual sua própria conta pertence.');
       await tx.tenant.update({ where: { id }, data: { archivedAt: new Date() } });
+      await writeAudit(tx, { tenantId: id, actorUserId: user.userId, action: 'tenant.archived', targetType: 'tenant', targetId: id });
     });
   }
 
-  async restore(id: string): Promise<void> {
-    await this.prisma.tenant.update({ where: { id }, data: { archivedAt: null } });
+  async restore(id: string, actorUserId?: string): Promise<void> {
+    await this.prisma.$transaction(async tx => {
+      await tx.tenant.update({ where: { id }, data: { archivedAt: null } });
+      await writeAudit(tx, { tenantId: id, actorUserId, action: 'tenant.restored', targetType: 'tenant', targetId: id });
+    });
   }
 }

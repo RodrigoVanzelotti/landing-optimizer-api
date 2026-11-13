@@ -11,6 +11,8 @@ import { newId } from '../../common/crypto/ids';
 import type { AppEnv } from '../../config/env';
 import type { AddOriginDto, CreateSiteDto, UpdateSiteDto } from './sites.dto';
 import type { Prisma } from '@prisma/client';
+import type { AuthUser } from '../../common/auth/auth.types';
+import { writeAudit } from '../../common/audit/audit.module';
 
 @Injectable()
 export class SitesService {
@@ -20,29 +22,33 @@ export class SitesService {
     private readonly config: ConfigService<AppEnv, true>,
   ) {}
 
-  async create(tenantId: string, dto: CreateSiteDto): Promise<PublicSite> {
+  async create(user: AuthUser, dto: CreateSiteDto): Promise<PublicSite> {
+    const tenantId = user.tenantId;
     const { publicKey, privateKeyEnc } = this.crypto.generateSiteKeyPair();
     const id = newId();
     const ingestKey = 'ik_' + randomBytes(18).toString('base64url');
 
-    const site = await this.prisma.site.create({
-      data: {
-        id,
-        tenantId,
-        name: dto.name,
-        primaryDomain: dto.primaryDomain,
-        publicKey,
-        privateKeyEnc: Buffer.from(privateKeyEnc),
-        ingestKey,
-        origins: {
-          create: {
-            id: newId(),
-            origin: normalizeOrigin(dto.primaryDomain),
+    return this.prisma.$transaction(async tx => {
+      const site = await tx.site.create({
+        data: {
+          id,
+          tenantId,
+          name: dto.name,
+          primaryDomain: dto.primaryDomain,
+          publicKey,
+          privateKeyEnc: Buffer.from(privateKeyEnc),
+          ingestKey,
+          origins: {
+            create: {
+              id: newId(),
+              origin: normalizeOrigin(dto.primaryDomain),
+            },
           },
         },
-      },
+      });
+      await writeAudit(tx, { tenantId, actorUserId: user.userId, action: 'site.created', targetType: 'site', targetId: id });
+      return toPublicSite(site);
     });
-    return toPublicSite(site);
   }
 
   async list(tenantId: string): Promise<PublicSite[]> {
@@ -58,15 +64,18 @@ export class SitesService {
     return toPublicSite(site);
   }
 
-  async update(tenantId: string, id: string, dto: UpdateSiteDto): Promise<PublicSite> {
-    await this.requireSite(tenantId, id);
+  async update(user: AuthUser, id: string, dto: UpdateSiteDto): Promise<PublicSite> {
+    await this.requireSite(user.tenantId, id);
     const data: Prisma.SiteUpdateInput = {};
     if (dto.name !== undefined) data.name = dto.name;
     if (dto.samplingRate !== undefined) data.samplingRate = dto.samplingRate;
     if (dto.status !== undefined) data.status = dto.status;
     if (dto.settings !== undefined) data.settings = dto.settings as Prisma.InputJsonValue;
-    const site = await this.prisma.site.update({ where: { id }, data });
-    return toPublicSite(site);
+    return this.prisma.$transaction(async tx => {
+      const site = await tx.site.update({ where: { id }, data });
+      await writeAudit(tx, { tenantId: user.tenantId, actorUserId: user.userId, action: 'site.updated', targetType: 'site', targetId: id, metadata: { fields: Object.keys(data) } });
+      return toPublicSite(site);
+    });
   }
 
   async listOrigins(tenantId: string, id: string): Promise<{ id: string; origin: string }[]> {
@@ -78,19 +87,25 @@ export class SitesService {
     });
   }
 
-  async addOrigin(tenantId: string, id: string, dto: AddOriginDto): Promise<void> {
-    await this.requireSite(tenantId, id);
+  async addOrigin(user: AuthUser, id: string, dto: AddOriginDto): Promise<void> {
+    await this.requireSite(user.tenantId, id);
     const origin = normalizeOrigin(dto.origin);
-    await this.prisma.siteOrigin.upsert({
-      where: { siteId_origin: { siteId: id, origin } },
-      update: {},
-      create: { id: newId(), siteId: id, origin },
+    await this.prisma.$transaction(async tx => {
+      const saved = await tx.siteOrigin.upsert({
+        where: { siteId_origin: { siteId: id, origin } },
+        update: {},
+        create: { id: newId(), siteId: id, origin },
+      });
+      await writeAudit(tx, { tenantId: user.tenantId, actorUserId: user.userId, action: 'site.origin_added', targetType: 'site_origin', targetId: saved.id, metadata: { siteId: id } });
     });
   }
 
-  async removeOrigin(tenantId: string, id: string, originId: string): Promise<void> {
-    await this.requireSite(tenantId, id);
-    await this.prisma.siteOrigin.deleteMany({ where: { id: originId, siteId: id } });
+  async removeOrigin(user: AuthUser, id: string, originId: string): Promise<void> {
+    await this.requireSite(user.tenantId, id);
+    await this.prisma.$transaction(async tx => {
+      const result = await tx.siteOrigin.deleteMany({ where: { id: originId, siteId: id } });
+      if (result.count) await writeAudit(tx, { tenantId: user.tenantId, actorUserId: user.userId, action: 'site.origin_removed', targetType: 'site_origin', targetId: originId, metadata: { siteId: id } });
+    });
   }
 
   /** Returns the one-line install snippet + GTM instructions for a site. */

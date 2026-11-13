@@ -46,16 +46,18 @@ it('sets the primary goal on a draft with site ownership checks and freezes it a
   const findUnique = vi.fn().mockResolvedValue({ tenantId: 'tenant', siteId: 'site', status: 'draft' });
   const findFirst = vi.fn().mockResolvedValue({ id: 'goal' });
   const update = vi.fn().mockResolvedValue({});
-  const service = new ExperimentsService({ experiment: { findUnique, update }, conversionGoal: { findFirst } } as never, {} as never, {} as never);
-  await service.update('tenant', 'experiment', UpdateExperimentSchema.parse({ primaryGoalId: 'goal' }));
+  const tx = { experiment: { findUnique, update }, conversionGoal: { findFirst } };
+  const service = new ExperimentsService({ ...tx, $transaction: async (fn: (client: typeof tx) => Promise<unknown>) => fn(tx) } as never, {} as never, { log: vi.fn().mockResolvedValue(undefined) } as never);
+  const user = { userId: 'editor', tenantId: 'tenant', email: 'editor@example.com', role: 'editor' as const };
+  await service.update(user, 'experiment', UpdateExperimentSchema.parse({ primaryGoalId: 'goal' }));
   expect(findFirst).toHaveBeenCalledWith({ where: { id: 'goal', siteId: 'site' }, select: { id: true } });
   expect(update).toHaveBeenCalledWith({ where: { id: 'experiment' }, data: { primaryGoal: { connect: { id: 'goal' } } } });
-  await service.update('tenant', 'experiment', { primaryGoalId: null });
+  await service.update(user, 'experiment', { primaryGoalId: null });
   expect(update).toHaveBeenLastCalledWith({ where: { id: 'experiment' }, data: { primaryGoal: { disconnect: true } } });
   findFirst.mockResolvedValue(null);
-  await expect(service.update('tenant', 'experiment', { primaryGoalId: 'foreign-goal' })).rejects.toThrow('Unknown conversion goal for this site');
+  await expect(service.update(user, 'experiment', { primaryGoalId: 'foreign-goal' })).rejects.toThrow('Unknown conversion goal for this site');
   findUnique.mockResolvedValue({ tenantId: 'tenant', siteId: 'site', status: 'running' });
-  await expect(service.update('tenant', 'experiment', { primaryGoalId: 'goal' })).rejects.toThrow('Cannot edit experiment');
+  await expect(service.update(user, 'experiment', { primaryGoalId: 'goal' })).rejects.toThrow('Cannot edit experiment');
   expect(update).toHaveBeenCalledTimes(2);
 });
 

@@ -10,6 +10,7 @@ import { TeamService } from '../team/team.service';
 import type { AppEnv } from '../../config/env';
 import type { AuthUser, JwtPayload } from '../../common/auth/auth.types';
 import { isPlatformOwner } from '../../common/auth/platform-owner.guard';
+import { writeAudit } from '../../common/audit/audit.module';
 
 export interface AuthResult {
   accessToken: string;
@@ -56,13 +57,19 @@ export class AuthService {
     const ok = await argon2.verify(user.passwordHash, password);
     if (!ok) throw new UnauthorizedException('Invalid credentials');
 
-    return this.issue({
+    const result = await this.issue({
       userId: user.id,
       tenantId: membership.tenantId,
       role: membership.role,
       email: user.email,
       sessionVersion: user.sessionVersion,
     }, rememberMe);
+    await writeAudit(this.prisma, { tenantId: membership.tenantId, actorUserId: user.id, action: 'auth.login', targetType: 'user', targetId: user.id });
+    return result;
+  }
+
+  async logout(user: AuthUser): Promise<void> {
+    await writeAudit(this.prisma, { tenantId: user.tenantId, actorUserId: user.userId, action: 'auth.logout', targetType: 'user', targetId: user.userId });
   }
 
   async refresh(token: string): Promise<AuthResult> {

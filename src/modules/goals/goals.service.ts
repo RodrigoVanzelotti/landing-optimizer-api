@@ -35,25 +35,27 @@ export class GoalsService {
     await this.requireSite(user.tenantId, siteId);
     await this.assertNameAvailable(siteId, dto.name);
 
-    const goal = await this.prisma.conversionGoal.create({
-      data: {
-        id: newId(),
-        siteId,
-        name: dto.name,
-        kind: dto.kind,
-        matcher: dto.matcher as unknown as Prisma.InputJsonValue,
-      },
-    });
+    return this.prisma.$transaction(async tx => {
+      const goal = await tx.conversionGoal.create({
+        data: {
+          id: newId(),
+          siteId,
+          name: dto.name,
+          kind: dto.kind,
+          matcher: dto.matcher as unknown as Prisma.InputJsonValue,
+        },
+      });
 
-    await this.audit.log({
-      tenantId: user.tenantId,
-      actorUserId: user.userId,
-      action: 'goal.created',
-      targetType: 'conversion_goal',
-      targetId: goal.id,
-      metadata: { siteId, name: goal.name, kind: goal.kind },
+      await this.audit.log({
+        tenantId: user.tenantId,
+        actorUserId: user.userId,
+        action: 'goal.created',
+        targetType: 'conversion_goal',
+        targetId: goal.id,
+        metadata: { siteId, name: goal.name, kind: goal.kind },
+      }, tx);
+      return goal;
     });
-    return goal;
   }
 
   async list(tenantId: string, siteId: string): Promise<ConversionGoal[]> {
@@ -94,16 +96,18 @@ export class GoalsService {
     }
     if (Object.keys(data).length === 0) return goal;
 
-    const updated = await this.prisma.conversionGoal.update({ where: { id: goalId }, data });
-    await this.audit.log({
-      tenantId: user.tenantId,
-      actorUserId: user.userId,
-      action: 'goal.updated',
-      targetType: 'conversion_goal',
-      targetId: goalId,
-      metadata: { siteId, fields: Object.keys(data) },
+    return this.prisma.$transaction(async tx => {
+      const updated = await tx.conversionGoal.update({ where: { id: goalId }, data });
+      await this.audit.log({
+        tenantId: user.tenantId,
+        actorUserId: user.userId,
+        action: 'goal.updated',
+        targetType: 'conversion_goal',
+        targetId: goalId,
+        metadata: { siteId, fields: Object.keys(data) },
+      }, tx);
+      return updated;
     });
-    return updated;
   }
 
   async remove(user: AuthUser, siteId: string, goalId: string): Promise<void> {
@@ -119,14 +123,16 @@ export class GoalsService {
       );
     }
 
-    await this.prisma.conversionGoal.delete({ where: { id: goalId } });
-    await this.audit.log({
-      tenantId: user.tenantId,
-      actorUserId: user.userId,
-      action: 'goal.deleted',
-      targetType: 'conversion_goal',
-      targetId: goalId,
-      metadata: { siteId },
+    await this.prisma.$transaction(async tx => {
+      await tx.conversionGoal.delete({ where: { id: goalId } });
+      await this.audit.log({
+        tenantId: user.tenantId,
+        actorUserId: user.userId,
+        action: 'goal.deleted',
+        targetType: 'conversion_goal',
+        targetId: goalId,
+        metadata: { siteId },
+      }, tx);
     });
   }
 

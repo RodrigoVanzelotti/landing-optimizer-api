@@ -42,50 +42,52 @@ export class ExperimentsService {
     const id = newId();
     const riskScore = computeRiskScore(dto);
 
-    const experiment = await this.prisma.experiment.create({
-      data: {
-        id,
-        tenantId: user.tenantId,
-        siteId: dto.siteId,
-        name: dto.name,
-        hypothesis: dto.hypothesis ?? null,
-        type: dto.type,
-        status: 'draft',
-        allocation: dto.allocation,
-        targeting: (dto.targeting ?? {}) as Prisma.InputJsonValue,
-        primaryGoalId: dto.primaryGoalId ?? null,
-        riskScore,
-        createdBy: user.userId,
-        variants: {
-          create: dto.variants.map((v) => ({
-            id: newId(),
-            name: v.name,
-            isControl: v.isControl,
-            weight: v.weight,
-            changes: {
-              create: v.changes.map((c) => ({
-                id: newId(),
-                selector: c.selector,
-                op: c.op,
-                originalValue: c.originalValue ?? null,
-                proposedValue: c.proposedValue ?? null,
-                attrName: c.attrName ?? null,
-              })),
-            },
-          })),
+    return this.prisma.$transaction(async tx => {
+      const experiment = await tx.experiment.create({
+        data: {
+          id,
+          tenantId: user.tenantId,
+          siteId: dto.siteId,
+          name: dto.name,
+          hypothesis: dto.hypothesis ?? null,
+          type: dto.type,
+          status: 'draft',
+          allocation: dto.allocation,
+          targeting: (dto.targeting ?? {}) as Prisma.InputJsonValue,
+          primaryGoalId: dto.primaryGoalId ?? null,
+          riskScore,
+          createdBy: user.userId,
+          variants: {
+            create: dto.variants.map((v) => ({
+              id: newId(),
+              name: v.name,
+              isControl: v.isControl,
+              weight: v.weight,
+              changes: {
+                create: v.changes.map((c) => ({
+                  id: newId(),
+                  selector: c.selector,
+                  op: c.op,
+                  originalValue: c.originalValue ?? null,
+                  proposedValue: c.proposedValue ?? null,
+                  attrName: c.attrName ?? null,
+                })),
+              },
+            })),
+          },
         },
-      },
-    });
+      });
 
-    await this.audit.log({
-      tenantId: user.tenantId,
-      actorUserId: user.userId,
-      action: 'experiment.created',
-      targetType: 'experiment',
-      targetId: id,
-      metadata: { name: dto.name, type: dto.type, riskScore },
+      await this.audit.log({
+        tenantId: user.tenantId,
+        actorUserId: user.userId,
+        action: 'experiment.created',
+        targetType: 'experiment',
+        targetId: id,
+        metadata: { name: dto.name, type: dto.type, riskScore },
+      }, tx);
+      return experiment;
     });
-    return experiment;
   }
 
   list(tenantId: string, filter: { siteId?: string; status?: ExperimentStatus }) {
@@ -113,8 +115,8 @@ export class ExperimentsService {
     return experiment;
   }
 
-  async update(tenantId: string, id: string, dto: UpdateExperimentDto): Promise<Experiment> {
-    const experiment = await this.requireExperiment(tenantId, id);
+  async update(user: AuthUser, id: string, dto: UpdateExperimentDto): Promise<Experiment> {
+    const experiment = await this.requireExperiment(user.tenantId, id);
     if (!EDITABLE_STATUSES.includes(experiment.status)) {
       throw new ConflictException(`Cannot edit experiment in status ${experiment.status}`);
     }
@@ -127,7 +129,11 @@ export class ExperimentsService {
     if (dto.hypothesis !== undefined) data.hypothesis = dto.hypothesis;
     if (dto.allocation !== undefined) data.allocation = dto.allocation;
     if (dto.targeting !== undefined) data.targeting = dto.targeting as Prisma.InputJsonValue;
-    return this.prisma.experiment.update({ where: { id }, data });
+    return this.prisma.$transaction(async tx => {
+      const updated = await tx.experiment.update({ where: { id }, data });
+      await this.record(user, id, 'experiment.updated', { fields: Object.keys(data) }, tx);
+      return updated;
+    });
   }
 
   /* --------------------------- state transitions -------------------------- */
@@ -144,9 +150,10 @@ export class ExperimentsService {
           riskScore: experiment.riskScore,
         },
       });
-      return tx.experiment.update({ where: { id }, data: { status: 'pending_review' } });
+      const changed = await tx.experiment.update({ where: { id }, data: { status: 'pending_review' } });
+      await this.record(user, id, 'experiment.submitted', {}, tx);
+      return changed;
     });
-    await this.record(user, id, 'experiment.submitted');
     return updated;
   }
 
@@ -165,9 +172,10 @@ export class ExperimentsService {
           decidedAt: new Date(),
         },
       });
-      return tx.experiment.update({ where: { id }, data: { status: 'approved' } });
+      const changed = await tx.experiment.update({ where: { id }, data: { status: 'approved' } });
+      await this.record(user, id, 'experiment.approved', { reason: dto.reason }, tx);
+      return changed;
     });
-    await this.record(user, id, 'experiment.approved', { reason: dto.reason });
     return updated;
   }
 
@@ -184,74 +192,90 @@ export class ExperimentsService {
           decidedAt: new Date(),
         },
       });
-      return tx.experiment.update({ where: { id }, data: { status: 'rejected' } });
+      const changed = await tx.experiment.update({ where: { id }, data: { status: 'rejected' } });
+      await this.record(user, id, 'experiment.rejected', { reason: dto.reason }, tx);
+      return changed;
     });
-    await this.record(user, id, 'experiment.rejected', { reason: dto.reason });
     return updated;
   }
 
   async schedule(user: AuthUser, id: string, dto: ScheduleDto): Promise<Experiment> {
     const experiment = await this.requireExperiment(user.tenantId, id);
     this.assertTransition(experiment.status, 'scheduled');
-    const updated = await this.prisma.experiment.update({
-      where: { id },
-      data: { status: 'scheduled', startedAt: new Date(dto.startAt) },
+    const updated = await this.prisma.$transaction(async tx => {
+      const changed = await tx.experiment.update({
+        where: { id },
+        data: { status: 'scheduled', startedAt: new Date(dto.startAt) },
+      });
+      await this.record(user, id, 'experiment.scheduled', { startAt: dto.startAt }, tx);
+        return changed;
     });
-    await this.record(user, id, 'experiment.scheduled', { startAt: dto.startAt });
     return updated;
   }
 
   async start(user: AuthUser, id: string): Promise<Experiment> {
     const experiment = await this.requireExperiment(user.tenantId, id);
     this.assertTransition(experiment.status, 'running');
-    const updated = await this.prisma.experiment.update({
-      where: { id },
-      data: { status: 'running', startedAt: experiment.startedAt ?? new Date() },
+    const updated = await this.prisma.$transaction(async tx => {
+      const changed = await tx.experiment.update({
+        where: { id },
+        data: { status: 'running', startedAt: experiment.startedAt ?? new Date() },
+      });
+      await this.record(user, id, 'experiment.started', {}, tx);
+        return changed;
     });
-    await this.siteConfig.publish(experiment.siteId);
-    await this.record(user, id, 'experiment.started');
+    await this.siteConfig.publish(experiment.siteId, user.userId);
     return updated;
   }
 
   async pause(user: AuthUser, id: string): Promise<Experiment> {
     const experiment = await this.requireExperiment(user.tenantId, id);
     this.assertTransition(experiment.status, 'paused');
-    const updated = await this.prisma.experiment.update({
-      where: { id },
-      data: { status: 'paused' },
+    const updated = await this.prisma.$transaction(async tx => {
+      const changed = await tx.experiment.update({
+        where: { id },
+        data: { status: 'paused' },
+      });
+      await this.record(user, id, 'experiment.paused', {}, tx);
+        return changed;
     });
-    await this.siteConfig.publish(experiment.siteId);
-    await this.record(user, id, 'experiment.paused');
+    await this.siteConfig.publish(experiment.siteId, user.userId);
     return updated;
   }
 
   async complete(user: AuthUser, id: string, dto: CompleteDto): Promise<Experiment> {
     const experiment = await this.requireExperiment(user.tenantId, id);
     this.assertTransition(experiment.status, 'completed');
-    const updated = await this.prisma.experiment.update({
-      where: { id },
-      data: {
-        status: 'completed',
-        endedAt: new Date(),
-        winnerVariantId: dto.winnerVariantId ?? null,
-      },
+    const updated = await this.prisma.$transaction(async tx => {
+      const changed = await tx.experiment.update({
+        where: { id },
+        data: {
+          status: 'completed',
+          endedAt: new Date(),
+          winnerVariantId: dto.winnerVariantId ?? null,
+        },
+      });
+      await this.record(user, id, 'experiment.completed', {
+        winnerVariantId: dto.winnerVariantId,
+      }, tx);
+        return changed;
     });
-    await this.siteConfig.publish(experiment.siteId);
-    await this.record(user, id, 'experiment.completed', {
-      winnerVariantId: dto.winnerVariantId,
-    });
+    await this.siteConfig.publish(experiment.siteId, user.userId);
     return updated;
   }
 
   async rollback(user: AuthUser, id: string): Promise<Experiment> {
     const experiment = await this.requireExperiment(user.tenantId, id);
     this.assertTransition(experiment.status, 'rolled_back');
-    const updated = await this.prisma.experiment.update({
-      where: { id },
-      data: { status: 'rolled_back', endedAt: new Date() },
+    const updated = await this.prisma.$transaction(async tx => {
+      const changed = await tx.experiment.update({
+        where: { id },
+        data: { status: 'rolled_back', endedAt: new Date() },
+      });
+      await this.record(user, id, 'experiment.rolled_back', {}, tx);
+        return changed;
     });
-    await this.siteConfig.publish(experiment.siteId);
-    await this.record(user, id, 'experiment.rolled_back');
+    await this.siteConfig.publish(experiment.siteId, user.userId);
     return updated;
   }
 
@@ -261,12 +285,15 @@ export class ExperimentsService {
     if (!['running', 'scheduled', 'paused'].includes(experiment.status)) {
       throw new ConflictException(`Cannot kill experiment in status ${experiment.status}`);
     }
-    const updated = await this.prisma.experiment.update({
-      where: { id },
-      data: { status: 'paused' },
+    const updated = await this.prisma.$transaction(async tx => {
+      const changed = await tx.experiment.update({
+        where: { id },
+        data: { status: 'paused' },
+      });
+      await this.record(user, id, 'experiment.killed', {}, tx);
+        return changed;
     });
-    await this.siteConfig.publish(experiment.siteId);
-    await this.record(user, id, 'experiment.killed');
+    await this.siteConfig.publish(experiment.siteId, user.userId);
     return updated;
   }
 
@@ -308,6 +335,7 @@ export class ExperimentsService {
     id: string,
     action: string,
     metadata: Record<string, unknown> = {},
+    tx?: Prisma.TransactionClient,
   ): Promise<void> {
     await this.audit.log({
       tenantId: user.tenantId,
@@ -316,7 +344,7 @@ export class ExperimentsService {
       targetType: 'experiment',
       targetId: id,
       metadata,
-    });
+    }, tx);
   }
 }
 

@@ -45,6 +45,7 @@ describe('exclusive platform access', () => {
 describe('tenant management', () => {
   function setup() {
     const tx = {
+      auditLog: { create: vi.fn().mockResolvedValue({}) },
       $queryRaw: vi.fn().mockResolvedValue([{ id: 'customer-tenant' }]),
       tenant: { findUnique: vi.fn().mockResolvedValue({ id: 'customer-tenant', name: 'Acme', archivedAt: null }), findMany: vi.fn().mockResolvedValue([]), update: vi.fn().mockResolvedValue({}) },
       userMembership: { findFirst: vi.fn().mockResolvedValue(null) },
@@ -70,8 +71,8 @@ describe('tenant management', () => {
   it('uses the existing provisioning transaction and forces the first administrator role', async () => {
     const { service, prisma } = setup();
     const input = CreateTenantSchema.parse({ name: ' Ana ', email: ' ANA@ACME.COM ', tenantName: ' Acme ', role: 'owner' });
-    await service.create(input);
-    expect(provisionTenant).toHaveBeenCalledWith(prisma, 'Acme', { name: 'Ana', email: 'ana@acme.com', role: 'admin' }, 'https://dashboard.example.com');
+    await service.create(input, owner.userId);
+    expect(provisionTenant).toHaveBeenCalledWith(prisma, 'Acme', { name: 'Ana', email: 'ana@acme.com', role: 'admin' }, 'https://dashboard.example.com', owner.userId);
   });
 
   it('archives with explicit confirmation, under a tenant lock, preserving all data', async () => {

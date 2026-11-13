@@ -53,9 +53,9 @@ export class AiService {
     );
     if (!result) throw new ServiceUnavailableException('AI service unavailable');
 
-    await this.prisma.$transaction(
-      result.suggestions.map((s) =>
-        this.prisma.aiSuggestion.create({
+    await this.prisma.$transaction(async tx => {
+      await Promise.all(result.suggestions.map((s) =>
+        tx.aiSuggestion.create({
           data: {
             id: newId(),
             tenantId: user.tenantId,
@@ -67,16 +67,16 @@ export class AiService {
             riskLevel: s.riskLevel,
           },
         }),
-      ),
-    );
+      ));
 
-    await this.audit.log({
-      tenantId: user.tenantId,
-      actorUserId: user.userId,
-      action: 'ai.analyzed',
-      targetType: 'site',
-      targetId: siteId,
-      metadata: { count: result.suggestions.length, score: result.score },
+      await this.audit.log({
+        tenantId: user.tenantId,
+        actorUserId: user.userId,
+        action: 'ai.analyzed',
+        targetType: 'site',
+        targetId: siteId,
+        metadata: { count: result.suggestions.length, score: result.score },
+      }, tx);
     });
     void site;
     return { count: result.suggestions.length, score: result.score };
@@ -107,60 +107,63 @@ export class AiService {
     if (!payload.selector || !payload.proposedValue) {
       throw new BadRequestException('Suggestion is not directly actionable');
     }
+    const { selector, proposedValue } = payload;
 
     const experimentId = newId();
     const type = payload.kind === 'cta' ? 'cta' : 'headline';
-    await this.prisma.experiment.create({
-      data: {
-        id: experimentId,
-        tenantId: user.tenantId,
-        siteId: suggestion.siteId,
-        name: payload.title.slice(0, 160),
-        hypothesis: payload.detail.slice(0, 2000),
-        type,
-        status: 'ai_suggested',
-        allocation: 0.5,
-        targeting: {},
-        riskScore: payload.riskLevel === 'high' ? 70 : payload.riskLevel === 'medium' ? 40 : 15,
-        createdBy: user.userId,
-        variants: {
-          create: [
-            { id: newId(), name: 'control', isControl: true, weight: 0.5 },
-            {
-              id: newId(),
-              name: 'v1',
-              isControl: false,
-              weight: 0.5,
-              changes: {
-                create: [
-                  {
-                    id: newId(),
-                    selector: payload.selector,
-                    op: 'set_text',
-                    originalValue: payload.originalValue ?? null,
-                    proposedValue: payload.proposedValue,
-                  },
-                ],
+    return this.prisma.$transaction(async tx => {
+      await tx.experiment.create({
+        data: {
+          id: experimentId,
+          tenantId: user.tenantId,
+          siteId: suggestion.siteId,
+          name: payload.title.slice(0, 160),
+          hypothesis: payload.detail.slice(0, 2000),
+          type,
+          status: 'ai_suggested',
+          allocation: 0.5,
+          targeting: {},
+          riskScore: payload.riskLevel === 'high' ? 70 : payload.riskLevel === 'medium' ? 40 : 15,
+          createdBy: user.userId,
+          variants: {
+            create: [
+              { id: newId(), name: 'control', isControl: true, weight: 0.5 },
+              {
+                id: newId(),
+                name: 'v1',
+                isControl: false,
+                weight: 0.5,
+                changes: {
+                  create: [
+                    {
+                      id: newId(),
+                      selector,
+                      op: 'set_text',
+                      originalValue: payload.originalValue ?? null,
+                      proposedValue,
+                    },
+                  ],
+                },
               },
-            },
-          ],
+            ],
+          },
         },
-      },
-    });
+      });
 
-    await this.prisma.aiSuggestion.update({
-      where: { id: suggestionId },
-      data: { experimentId },
+      await tx.aiSuggestion.update({
+        where: { id: suggestionId },
+        data: { experimentId },
+      });
+      await this.audit.log({
+        tenantId: user.tenantId,
+        actorUserId: user.userId,
+        action: 'ai.materialized',
+        targetType: 'experiment',
+        targetId: experimentId,
+        metadata: { suggestionId },
+      }, tx);
+      return { experimentId };
     });
-    await this.audit.log({
-      tenantId: user.tenantId,
-      actorUserId: user.userId,
-      action: 'ai.materialized',
-      targetType: 'experiment',
-      targetId: experimentId,
-      metadata: { suggestionId },
-    });
-    return { experimentId };
   }
 
   private async requireSite(tenantId: string, siteId: string) {
