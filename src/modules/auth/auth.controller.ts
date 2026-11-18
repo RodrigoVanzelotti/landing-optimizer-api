@@ -4,6 +4,7 @@ import {
   Get,
   HttpCode,
   Post,
+  Put,
   Req,
   Res,
   UseGuards,
@@ -14,6 +15,8 @@ import {
   LoginSchema,
   RegisterSchema,
   ResetPasswordSchema,
+  PreferencesSchema,
+  type PreferencesDto,
   type LoginDto,
   type RegisterDto,
 } from './auth.dto';
@@ -98,6 +101,16 @@ export class AuthController {
   @Get('me')
   async me(@CurrentUser() user: AuthUser): Promise<unknown> {
     return this.auth.me(user);
+  }
+
+  @Get('preferences')
+  preferences(@CurrentUser() user: AuthUser) {
+    return this.auth.preferences(user);
+  }
+
+  @Put('preferences')
+  updatePreferences(@CurrentUser() user: AuthUser, @Body(new ZodValidationPipe(PreferencesSchema)) dto: PreferencesDto) {
+    return this.auth.updatePreferences(user, dto.favoriteSiteId);
   }
 
   private setRefreshCookie(res: FastifyReply, result: AuthResult): void {

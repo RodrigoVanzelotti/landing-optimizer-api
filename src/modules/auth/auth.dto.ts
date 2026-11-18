@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+export const PreferencesSchema = z.object({ favoriteSiteId: z.string().uuid().nullable() }).strict();
+export type PreferencesDto = z.infer<typeof PreferencesSchema>;
+
 export const RegisterSchema = z.object({
   email: z.string().trim().email().max(254).transform((email) => email.toLowerCase()),
   password: z.string().min(10).max(200),

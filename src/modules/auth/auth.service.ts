@@ -1,6 +1,7 @@
 import {
   Injectable,
   UnauthorizedException,
+  NotFoundException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -112,6 +113,30 @@ export class AuthService {
       },
     });
     return { ...account, tenantId: user.tenantId, role: user.role === 'owner' ? 'admin' : user.role, platformOwner: isPlatformOwner(user.email) };
+  }
+
+  async preferences(user: AuthUser): Promise<{ favoriteSiteId: string | null }> {
+    const [preferences] = await this.prisma.$queryRaw<{ favoriteSiteId: string | null }[]>`
+      SELECT s.id AS "favoriteSiteId" FROM user_membership m
+      LEFT JOIN site s ON s.id = m.favorite_site_id AND s.tenant_id = m.tenant_id
+      WHERE m.user_id = ${user.userId} AND m.tenant_id = ${user.tenantId}`;
+    if (!preferences) throw new UnauthorizedException('Membership no longer exists');
+    return preferences;
+  }
+
+  async updatePreferences(user: AuthUser, favoriteSiteId: string | null): Promise<{ favoriteSiteId: string | null }> {
+    return this.prisma.$transaction(async tx => {
+      const [preferences] = await tx.$queryRaw<{ favoriteSiteId: string | null }[]>`
+        UPDATE user_membership SET favorite_site_id = ${favoriteSiteId}
+        WHERE user_id = ${user.userId} AND tenant_id = ${user.tenantId}
+          AND (${favoriteSiteId}::text IS NULL OR EXISTS (
+            SELECT 1 FROM site WHERE id = ${favoriteSiteId} AND tenant_id = ${user.tenantId}
+          ))
+        RETURNING favorite_site_id AS "favoriteSiteId"`;
+      if (!preferences) throw new NotFoundException('Site not found in current workspace');
+      await writeAudit(tx, { tenantId: user.tenantId, actorUserId: user.userId, action: 'user.preferences.updated', targetType: 'user', targetId: user.userId, metadata: { favoriteSiteId } });
+      return preferences;
+    });
   }
 
   private async issue(

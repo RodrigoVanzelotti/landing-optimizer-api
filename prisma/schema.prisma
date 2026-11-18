@@ -142,10 +142,12 @@ model UserMembership {
   tenantId  String   @map("tenant_id")
   userId    String   @map("user_id")
   role      Role     @default(viewer)
+  favoriteSiteId String? @map("favorite_site_id")
   createdAt DateTime @default(now()) @map("created_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  favoriteSite Site? @relation("FavoriteSite", fields: [favoriteSiteId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, userId])
   @@index([userId])
@@ -220,6 +222,7 @@ model Site {
 
   tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   origins         SiteOrigin[]
+  favoritedBy     UserMembership[] @relation("FavoriteSite")
   goals           ConversionGoal[]
   experiments     Experiment[]
   guardrail       BrandGuardrail?
