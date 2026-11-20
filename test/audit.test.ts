@@ -8,6 +8,7 @@ import { AuditQuerySchema, auditRange } from '../src/common/audit/audit.query';
 import { TeamService } from '../src/modules/team/team.service';
 import { SitesService } from '../src/modules/sites/sites.service';
 import { newId } from '../src/common/crypto/ids';
+import { csvRow } from '../src/common/audit/audit.csv';
 
 const admin = { userId: 'admin', tenantId: 'tenant', email: 'admin@example.com', role: 'admin' as const };
 const former = { id: 'former', name: 'Former member', email: 'former@example.com' };
@@ -29,15 +30,45 @@ function setup() {
 const row = (id: string, actorUserId: string | null = former.id) => ({ id, actorUserId, action: 'site.created', targetType: 'site', targetId: 'site', createdAt: new Date() });
 
 describe('audit search and author permissions', () => {
+  it('quotes CSV values and neutralizes formulas, including whitespace prefixes', () => {
+    expect(csvRow(['normal', 'with,comma', 'a"quote', 'line\nbreak'])).toBe('"normal","with,comma","a""quote","line\nbreak"\r\n');
+    for (const value of ['=1+1', '+cmd', '-cmd', '@SUM(A1)', '  =1+1', '\t=1', '\rmalicious', '\nmalicious']) expect(csvRow([value])).toBe(`"'${value}"\r\n`);
+  });
+  it('exports every page using one frozen time boundary and the same filters', async () => {
+    const { service } = setup();
+    const first = Array.from({ length: 500 }, (_, i) => ({ ...row(String(i), null), actor: { kind: 'system' }, targetLabel: null }));
+    const list = vi.spyOn(service, 'list').mockResolvedValueOnce({ items: first, nextCursor: '499', range: { from: null, to: new Date() } } as never)
+      .mockResolvedValueOnce({ items: [{ ...first[0], id: '500' }], nextCursor: null, range: { from: null, to: new Date() } } as never);
+    const query = AuditQuerySchema.parse({ action: 'site.created', order: 'asc', cursor: 'ignored' });
+    const csv = await service.exportCsv(admin, query);
+    let text = '';
+    for await (const chunk of csv) text += chunk;
+    expect(text.startsWith('\uFEFF')).toBe(true);
+    expect(text.split('\r\n')).toHaveLength(503);
+    expect(list).toHaveBeenNthCalledWith(1, admin, { ...query, cursor: undefined }, 500, expect.any(Date));
+    expect(list).toHaveBeenNthCalledWith(2, admin, { ...query, cursor: '499' }, 500, list.mock.calls[0]![3]);
+  });
+  it('exports redacted identities and rejects a forbidden author filter before streaming', async () => {
+    const { service, prisma } = setup();
+    prisma.auditLog.findMany.mockResolvedValue([row('one')] as never);
+    const viewer = { ...admin, role: 'viewer' as const };
+    let text = '';
+    for await (const chunk of await service.exportCsv(viewer, AuditQuerySchema.parse({}))) text += chunk;
+    expect(text).toContain('identidade restrita');
+    expect(text).not.toContain(former.email);
+    expect(text).not.toContain(former.name);
+    await expect(service.exportCsv(viewer, AuditQuerySchema.parse({ actorUserId: former.id }))).rejects.toMatchObject({ status: 403 });
+  });
   it('validates the four timeframes, sort direction and bounded filter values', () => {
-    expect(AuditQuerySchema.parse({})).toEqual({ timeframe: '30d', order: 'desc' });
-    for (const timeframe of ['7d', '30d', '6m', '1y']) expect(AuditQuerySchema.safeParse({ timeframe }).success).toBe(true);
-    for (const query of [{ timeframe: 'all' }, { order: 'DROP TABLE' }, { cursor: '' }, { action: 'x'.repeat(101) }]) expect(AuditQuerySchema.safeParse(query).success).toBe(false);
+    expect(AuditQuerySchema.parse({})).toEqual({ timeframe: 'all', order: 'desc' });
+    for (const timeframe of ['all', '7d', '30d', '6m', '1y']) expect(AuditQuerySchema.safeParse({ timeframe }).success).toBe(true);
+    for (const query of [{ timeframe: 'invalid' }, { order: 'DROP TABLE' }, { cursor: '' }, { action: 'x'.repeat(101) }]) expect(AuditQuerySchema.safeParse(query).success).toBe(false);
   });
   it('includes today and uses rolling days/calendar months without month-end overflow', () => {
     const now = new Date('2026-08-31T14:30:00Z');
-    expect(auditRange('7d', now).from.toISOString()).toBe('2026-08-24T14:30:00.000Z');
-    expect(auditRange('6m', now).from.toISOString()).toBe('2026-02-28T14:30:00.000Z');
+    expect(auditRange('all', now)).toEqual({ from: null, to: now });
+    expect(auditRange('7d', now).from?.toISOString()).toBe('2026-08-24T14:30:00.000Z');
+    expect(auditRange('6m', now).from?.toISOString()).toBe('2026-02-28T14:30:00.000Z');
     expect(auditRange('1y', now).to).toEqual(now);
   });
   it('only administrators receive former author choices, scoped to workspace audit history', async () => {
@@ -75,13 +106,13 @@ describe('audit search and author permissions', () => {
   });
   it('bounds every page, combines filters, and uses a stable date/id sort', async () => {
     const { service, prisma } = setup();
-    prisma.auditLog.findMany.mockResolvedValue(Array.from({ length: 26 }, (_, i) => row(String(i), null)) as never);
+    prisma.auditLog.findMany.mockResolvedValue(Array.from({ length: 11 }, (_, i) => row(String(i), null)) as never);
     const result = await service.list(admin, AuditQuerySchema.parse({ timeframe: '7d', action: 'site.created', actorUserId: 'system', order: 'asc', cursor: 'cursor' }));
-    expect(result.items).toHaveLength(25);
-    expect(result.nextCursor).toBe('24');
+    expect(result.items).toHaveLength(10);
+    expect(result.nextCursor).toBe('9');
     expect(prisma.auditLog.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ tenantId: admin.tenantId, action: 'site.created', actorUserId: null, createdAt: { gte: expect.any(Date), lte: expect.any(Date) } }),
-      take: 26, cursor: { id: 'cursor' }, skip: 1, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      take: 11, cursor: { id: 'cursor' }, skip: 1, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     }));
     prisma.auditLog.findFirst.mockResolvedValue(null);
     await expect(service.list(admin, AuditQuerySchema.parse({ cursor: 'foreign' }))).rejects.toMatchObject({ status: 404 });
@@ -147,8 +178,9 @@ it.skipIf(!process.env['AUDIT_TEST_DATABASE_URL'])('keeps real writes atomic wit
       const query = AuditQuerySchema.parse({ action: 'test.page', order });
       const first = await audit.list(user, query);
       const second = await audit.list(user, { ...query, cursor: first.nextCursor! });
-      expect(new Set([...first.items, ...second.items].map(item => item.id)).size).toBe(30);
-      expect(first.items).toHaveLength(25); expect(second.items).toHaveLength(5); expect(second.nextCursor).toBeNull();
+      const third = await audit.list(user, { ...query, cursor: second.nextCursor! });
+      expect(new Set([...first.items, ...second.items, ...third.items].map(item => item.id)).size).toBe(30);
+      expect(first.items).toHaveLength(10); expect(second.items).toHaveLength(10); expect(third.items).toHaveLength(10); expect(third.nextCursor).toBeNull();
     }
   } finally {
     // The generated, test-owned schema is the only deletion target.

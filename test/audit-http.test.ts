@@ -44,9 +44,20 @@ describe('audit HTTP compatibility', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ items: [{ id: record.id }], nextCursor: null, range: { from: expect.any(String), to: expect.any(String) } });
     expect(prisma.auditLog.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
-      where: { tenantId: user.tenantId, action: 'site.created', createdAt: { gte: expect.any(Date), lte: expect.any(Date) } }, take: 26,
+      where: { tenantId: user.tenantId, action: 'site.created', createdAt: { gte: expect.any(Date), lte: expect.any(Date) } }, take: 11,
     }));
     expect((await app.inject({ method: 'GET', url: '/audit/search?timeframe=invalid' })).statusCode).toBe(400);
     expect((await app.inject({ method: 'GET', url: '/audit?action=' })).statusCode).toBe(400);
+  });
+  it('loads all-time history by default and exports the complete safe query as CSV', async () => {
+    expect((await app.inject({ method: 'GET', url: '/audit/search' })).json()).toMatchObject({ range: { from: null } });
+    expect(prisma.auditLog.findMany).toHaveBeenLastCalledWith(expect.objectContaining({ where: { tenantId: user.tenantId, createdAt: { lte: expect.any(Date) } }, take: 11 }));
+    const csv = await app.inject({ method: 'GET', url: '/audit/export?action=site.created' });
+    expect(csv.statusCode).toBe(200);
+    expect(csv.headers['content-type']).toContain('text/csv');
+    expect(csv.headers['content-disposition']).toContain('attachment');
+    expect(csv.headers['cache-control']).toBe('private, no-store');
+    expect(csv.body).toContain('site.created');
+    expect(csv.body).toContain('Sistema / autor não registrado');
   });
 });

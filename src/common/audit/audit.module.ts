@@ -5,6 +5,7 @@ import { newId } from '../crypto/ids';
 import type { AuthUser } from '../auth/auth.types';
 import { isAdmin } from '../../modules/team/invitation';
 import { auditRange, type AuditQuery } from './audit.query';
+import { csvRow } from './audit.csv';
 
 export interface AuditEntry {
   tenantId: string;
@@ -61,25 +62,25 @@ export class AuditService {
     return { authors: [...actors.values()].sort((a, b) => (a.name ?? a.email).localeCompare(b.name ?? b.email)), actions: actions.map(row => row.action) };
   }
 
-  async list(user: AuthUser, query: AuditQuery) {
-    const range = auditRange(query.timeframe);
+  async list(user: AuthUser, query: AuditQuery, pageSize = 10, now = new Date()) {
+    const range = auditRange(query.timeframe, now);
     const admin = isAdmin(user.role);
     if (query.actorUserId && query.actorUserId !== 'system' && !admin) {
       const current = await this.prisma.userMembership.findFirst({ where: { tenantId: user.tenantId, userId: query.actorUserId }, select: { id: true } });
       if (!current) throw new ForbiddenException('Somente administradores podem consultar autores fora da equipe atual.');
     }
     const where: Prisma.AuditLogWhereInput = {
-      tenantId: user.tenantId, createdAt: { gte: range.from, lte: range.to },
+      tenantId: user.tenantId, createdAt: { ...(range.from ? { gte: range.from } : {}), lte: range.to },
       ...(query.action ? { action: query.action } : {}),
       ...(query.actorUserId ? { actorUserId: query.actorUserId === 'system' ? null : query.actorUserId } : {}),
     };
     if (query.cursor && !await this.prisma.auditLog.findFirst({ where: { ...where, id: query.cursor }, select: { id: true } })) throw new NotFoundException('Página não encontrada para estes filtros. Consulte novamente.');
     const rows = await this.prisma.auditLog.findMany({
-      where, orderBy: [{ createdAt: query.order }, { id: query.order }], take: 26,
+      where, orderBy: [{ createdAt: query.order }, { id: query.order }], take: pageSize + 1,
       ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
       select: { id: true, actorUserId: true, action: true, targetType: true, targetId: true, createdAt: true },
     });
-    const page = rows.slice(0, 25);
+    const page = rows.slice(0, pageSize);
     const ids = [...new Set(page.flatMap(row => [...(row.actorUserId ? [row.actorUserId] : []), ...(row.targetType === 'user' ? [row.targetId] : [])]))];
     const current = ids.length ? await this.prisma.userMembership.findMany({ where: { tenantId: user.tenantId, userId: { in: ids } }, select: { userId: true } }) : [];
     const activeIds = new Set(current.map(member => member.userId));
@@ -97,9 +98,29 @@ export class AuditService {
           email: byId.get(actorUserId)?.email ?? null, former: !activeIds.has(actorUserId),
         },
       })),
-      nextCursor: rows.length > 25 ? page[page.length - 1]!.id : null,
+      nextCursor: rows.length > pageSize ? page[page.length - 1]!.id : null,
       range,
     };
+  }
+
+  async exportCsv(user: AuthUser, query: AuditQuery) {
+    const now = new Date();
+    // Check filters and author permissions before sending any response headers.
+    const first = await this.list(user, { ...query, cursor: undefined }, 500, now);
+    const service = this;
+    return (async function* () {
+      yield '\uFEFF' + csvRow(['ID', 'Data (UTC)', 'Ação', 'Autor', 'E-mail do autor', 'Tipo de alvo', 'Alvo', 'ID do alvo']);
+      let page = first;
+      while (true) {
+        for (const row of page.items) yield csvRow([
+          row.id, row.createdAt.toISOString(), row.action,
+          row.actor.kind === 'user' ? row.actor.name ?? row.actor.email ?? row.actor.id : row.actor.kind === 'restricted' ? 'Autor fora da equipe atual · identidade restrita' : 'Sistema / autor não registrado',
+          row.actor.kind === 'user' ? row.actor.email ?? '' : '', row.targetType, row.targetLabel ?? '', row.targetId,
+        ]);
+        if (!page.nextCursor) return;
+        page = await service.list(user, { ...query, cursor: page.nextCursor }, 500, now);
+      }
+    })();
   }
 }
 

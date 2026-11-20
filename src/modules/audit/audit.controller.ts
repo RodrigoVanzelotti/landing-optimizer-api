@@ -1,4 +1,6 @@
-import { Controller, Get, Module, Query } from '@nestjs/common';
+import { Controller, Get, Header, Module, Query, Res } from '@nestjs/common';
+import { Readable } from 'node:stream';
+import type { FastifyReply } from 'fastify';
 import { AuditService } from '../../common/audit/audit.module';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import type { AuthUser } from '../../common/auth/auth.types';
@@ -21,6 +23,15 @@ export class AuditController {
 
   @Get('options')
   options(@CurrentUser() user: AuthUser) { return this.audit.options(user); }
+
+  @Get('export')
+  @Header('Content-Type', 'text/csv; charset=utf-8')
+  @Header('Content-Disposition', 'attachment; filename="atividades.csv"')
+  @Header('Cache-Control', 'private, no-store')
+  async export(@CurrentUser() user: AuthUser, @Query(new ZodValidationPipe(AuditQuerySchema)) query: AuditQuery, @Res() reply: FastifyReply) {
+    const csv = await this.audit.exportCsv(user, query);
+    return reply.send(Readable.from(csv));
+  }
 }
 
 @Module({
