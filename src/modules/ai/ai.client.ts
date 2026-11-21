@@ -5,6 +5,7 @@ import { Logger } from '../../common/logging/logger';
 import type { AppEnv } from '../../config/env';
 import { z } from 'zod';
 import { sanitizeSelector } from '../events/event-scrub';
+import { InsightReferencesSchema, type InsightReferences } from './insight-evidence';
 
 const logger = Logger('AiClient');
 
@@ -20,7 +21,7 @@ const AnalyzeResultSchema = z.object({
     originalValue: z.string().max(5000).nullish().transform(value => value ?? undefined),
     expectedImpact: z.string().max(2000).nullish().transform(value => value ?? undefined),
     riskLevel: z.enum(['low', 'medium', 'high']),
-  })).max(50),
+  }).extend(InsightReferencesSchema.shape)).max(50),
 });
 
 export interface AnalyzeInput {
@@ -30,7 +31,7 @@ export interface AnalyzeInput {
   guardrails?: Record<string, unknown>;
 }
 
-export interface AiSuggestionOut {
+export interface AiSuggestionOut extends InsightReferences {
   kind: 'hypothesis' | 'headline' | 'cta' | 'friction' | 'section' | 'score' | 'plan';
   title: string;
   detail: string;

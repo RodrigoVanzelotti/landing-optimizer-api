@@ -12,6 +12,7 @@ import { AuditService } from '../../common/audit/audit.module';
 import { newId } from '../../common/crypto/ids';
 import { AiClient, type AiSuggestionOut } from './ai.client';
 import type { AuthUser } from '../../common/auth/auth.types';
+import { insightKpis, resolveInsightEvidence } from './insight-evidence';
 
 @Injectable()
 export class AiService {
@@ -28,13 +29,10 @@ export class AiService {
     siteId: string,
     requestId?: string,
   ): Promise<{ count: number; score: number }> {
-    const site = await this.requireSite(user.tenantId, siteId);
-    const now = new Date();
-    const from = new Date(now.getTime() - 30 * 864e5).toISOString();
+    await this.requireSite(user.tenantId, siteId);
 
-    const [overview, sections, guardrail, latestMap] = await Promise.all([
-      this.analytics.overview(user.tenantId, siteId, fmt(from), fmt(now.toISOString())),
-      this.analytics.sections(user.tenantId, siteId),
+    const [report, guardrail, latestMap] = await Promise.all([
+      this.analytics.report(user.tenantId, siteId, '30d'),
       this.prisma.brandGuardrail.findUnique({ where: { siteId } }),
       this.prisma.pageMap.findFirst({
         where: { siteId },
@@ -42,19 +40,33 @@ export class AiService {
       }),
     ]);
 
+    if (!report.current.pageViews) throw new BadRequestException('Ainda não há visualizações de página para fundamentar os insights. Aguarde a ingestão de dados.');
+    const kpis = insightKpis(report);
+
     const result = await this.ai.analyze(
       {
         siteId,
         pageMap: latestMap?.map ?? { nodes: [] },
-        metrics: { overview, sections },
+        metrics: {
+          kpis,
+          period: { ...report.range, ...report.coverage, timezone: report.timezone },
+          overview: { ...report.current, conversionRate: report.current.conversions / report.current.pageViews },
+          sections: report.sections,
+        },
         guardrails: (guardrail?.rules as Record<string, unknown>) ?? {},
       },
       requestId,
     );
     if (!result) throw new ServiceUnavailableException('AI service unavailable');
+    if (['stub-v1', 'synthetic-demo'].includes(result.model)) throw new ServiceUnavailableException('O serviço de IA retornou resultados de demonstração. Nenhum insight foi registrado.');
+
+    const payloads = result.suggestions.map(s => {
+      try { return { ...s, ...resolveInsightEvidence(s, report, kpis, latestMap) }; }
+      catch { throw new ServiceUnavailableException('O serviço de IA retornou referências a KPIs ou elementos que não constam nos dados analisados.'); }
+    });
 
     await this.prisma.$transaction(async tx => {
-      await Promise.all(result.suggestions.map((s) =>
+      await Promise.all(payloads.map((s) =>
         tx.aiSuggestion.create({
           data: {
             id: newId(),
@@ -78,14 +90,13 @@ export class AiService {
         metadata: { count: result.suggestions.length, score: result.score },
       }, tx);
     });
-    void site;
     return { count: result.suggestions.length, score: result.score };
   }
 
   async listSuggestions(tenantId: string, siteId: string): Promise<unknown[]> {
     await this.requireSite(tenantId, siteId);
     return this.prisma.aiSuggestion.findMany({
-      where: { tenantId, siteId },
+      where: { tenantId, siteId, model: { notIn: ['stub-v1', 'synthetic-demo'] } },
       orderBy: { createdAt: 'desc' },
       take: 100,
     });
@@ -172,8 +183,4 @@ export class AiService {
     if (site.tenantId !== tenantId) throw new ForbiddenException('Cross-tenant access');
     return site;
   }
-}
-
-function fmt(iso: string): string {
-  return new Date(iso).toISOString().replace('T', ' ').replace('Z', '');
 }

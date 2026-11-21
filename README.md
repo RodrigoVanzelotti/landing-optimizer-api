@@ -39,6 +39,56 @@ restart the service; Prisma/ClickHouse migration changes synchronize and rerun
 idempotent deploy commands; package and Dockerfile changes rebuild the image.
 
 ## Key endpoints
+
+### Optional insight evidence contract
+
+The dashboard and API support variable insight cards. This step prepares the
+contract; the Python IA module and its automatic traffic-triggered generation
+are separate work. Manual generation stays hidden in the dashboard.
+
+`AiClient` accepts these optional fields on each suggestion returned by
+`/internal/analyze` (illustrative references, not real site data):
+
+```json
+{
+  "kpiKeys": ["ctaClicks", "ctaClicksPerView"],
+  "designContext": {
+    "selector": "#cta",
+    "observation": "Hipótese: uma chamada mais específica pode esclarecer o próximo passo."
+  }
+}
+```
+
+Neither block is mandatory, and they can be combined: two KPIs, one KPI plus
+a captured element, or another supported selection. `expectedImpact` remains
+optional and is displayed as a hypothesis. Up to six distinct KPI references
+are accepted per suggestion. The future IA module must preserve these fields
+in its response schema and consume the supplied KPI catalog without truncating
+away the references it uses; its current fixed schema/prompt does not do this yet.
+Its explanation should separate observed facts from the proposed hypothesis,
+use only catalog figures, and avoid causal claims or guaranteed improvements.
+
+The API supplies `metrics.kpis`, a catalog with keys, measured values, labels,
+units and definitions from the same 30-day report used by the dashboard (complete
+UTC days, excluding today and known bots). Keys include `pageViews`, `sessions`,
+`ctaClicks`, `conversions`, `formStarts`, `formCompletions`, `ctaClicksPerView`,
+`conversionsPerView`, `formCompletionRate`, and `section:<id>:views|deadClicks|rageClicks|dwellMs`.
+Models select keys; they do not supply authoritative numeric evidence.
+
+Before persistence, the API resolves selected keys and design selectors against
+that site's report and latest sanitized page map. Unknown references fail the
+analysis before any suggestions are written. Resolved `kpis`, `analysisPeriod`
+(range, coverage, session/page-view sample and optional comparison period), and
+optional `designContext` (captured text/path/time plus model interpretation) are
+stored in the existing suggestion JSON payload, without a database migration.
+Ratios with no denominator remain null; comparisons require complete history.
+KPIs are site- or section-level observations, not proof that a specific element
+caused a result. Element observations describe a capture, not necessarily today's design.
+
+Legacy responses without references remain compatible and are shown without
+verified evidence; no current values are attached retroactively. Sites without
+page views and demonstration-provider results cannot create new insights.
+
 See [../landing-optimizer-infra/docs/API_CONTRACTS.md](../landing-optimizer-infra/docs/API_CONTRACTS.md).
 - `POST /v1/auth/register|login` — operator auth; registration requires a valid tenant invitation (see below).
 
