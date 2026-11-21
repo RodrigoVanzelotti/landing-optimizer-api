@@ -40,6 +40,23 @@ idempotent deploy commands; package and Dockerfile changes rebuild the image.
 
 ## Key endpoints
 
+### Objective-based experiment impact
+
+`GET /analytics/experiment-impact?siteId=<uuid>&goalId=<uuid>&timeframe=7d|30d|6m|1y`
+returns observed control/variant conversion rates, current/prior period aggregates,
+cumulative temporal points, coverage and experiment start/end metadata. Running
+experiments are included as provisional. Overlapping assignments are excluded;
+individual experiment lifts are never added into a synthetic page rate. A later
+conversion enters the curve on its conversion date, without rewriting earlier
+points. See [the counting/business rules](../landing-optimizer-dashboard/docs/OVERVIEW_ANALYTICS.md).
+
+Goal creation/update accepts optional boolean `isFavorite`. This shared site
+default initializes the Overview objective selector; it does not change any
+experiment's primary goal. Replacements lock the authorized site and update the
+favorite in the same transaction as the goal/audit write. Migration
+`20261121233000_favorite_conversion_goal` adds the flag and enforces at most one
+favorite per site with a partial unique index. Apply it before deploying the API.
+
 ### Insight approval and experiment preparation
 
 The dashboard groups experiments into five stages: awaiting approval (also

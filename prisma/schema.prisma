@@ -247,12 +247,13 @@ model SiteOrigin {
 }
 
 model ConversionGoal {
-  id        String   @id
-  siteId    String   @map("site_id")
-  name      String
-  kind      GoalKind @default(event)
-  matcher   Json     @default("{}")
-  createdAt DateTime @default(now()) @map("created_at")
+  id         String   @id
+  siteId     String   @map("site_id")
+  name       String
+  kind       GoalKind @default(event)
+  matcher    Json     @default("{}")
+  isFavorite Boolean  @default(false) @map("is_favorite")
+  createdAt  DateTime @default(now()) @map("created_at")
 
   site        Site         @relation(fields: [siteId], references: [id], onDelete: Cascade)
   experiments Experiment[]

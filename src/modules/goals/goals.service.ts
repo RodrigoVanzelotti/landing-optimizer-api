@@ -36,6 +36,7 @@ export class GoalsService {
     await this.assertNameAvailable(siteId, dto.name);
 
     return this.prisma.$transaction(async tx => {
+      if (dto.isFavorite) await this.clearFavorite(tx, user.tenantId, siteId);
       const goal = await tx.conversionGoal.create({
         data: {
           id: newId(),
@@ -43,6 +44,7 @@ export class GoalsService {
           name: dto.name,
           kind: dto.kind,
           matcher: dto.matcher as unknown as Prisma.InputJsonValue,
+          isFavorite: dto.isFavorite ?? false,
         },
       });
 
@@ -52,7 +54,7 @@ export class GoalsService {
         action: 'goal.created',
         targetType: 'conversion_goal',
         targetId: goal.id,
-        metadata: { siteId, name: goal.name, kind: goal.kind },
+        metadata: { siteId, name: goal.name, kind: goal.kind, isFavorite: goal.isFavorite },
       }, tx);
       return goal;
     });
@@ -81,6 +83,7 @@ export class GoalsService {
     const goal = await this.requireGoal(siteId, goalId);
 
     const data: Prisma.ConversionGoalUpdateInput = {};
+    if (dto.isFavorite !== undefined) data.isFavorite = dto.isFavorite;
     if (dto.name !== undefined && dto.name !== goal.name) {
       await this.assertNameAvailable(siteId, dto.name, goalId);
       data.name = dto.name;
@@ -97,6 +100,7 @@ export class GoalsService {
     if (Object.keys(data).length === 0) return goal;
 
     return this.prisma.$transaction(async tx => {
+      if (dto.isFavorite) await this.clearFavorite(tx, user.tenantId, siteId);
       const updated = await tx.conversionGoal.update({ where: { id: goalId }, data });
       await this.audit.log({
         tenantId: user.tenantId,
@@ -137,6 +141,11 @@ export class GoalsService {
   }
 
   /* ------------------------------- helpers -------------------------------- */
+
+  private async clearFavorite(tx: Prisma.TransactionClient, tenantId: string, siteId: string): Promise<void> {
+    await tx.$queryRaw`SELECT id FROM site WHERE id = ${siteId} AND tenant_id = ${tenantId} FOR UPDATE`;
+    await tx.conversionGoal.updateMany({ where: { siteId, isFavorite: true }, data: { isFavorite: false } });
+  }
 
   private async assertNameAvailable(
     siteId: string,

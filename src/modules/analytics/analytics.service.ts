@@ -3,6 +3,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { ClickHouseService } from './clickhouse/clickhouse.service';
 import { analyzeExperiment, type VariantResult, type VariantStat } from './stats';
 import { buildReport, reportRange, SESSION_REPORT_SQL, type DailyMetric, type ReportQuery } from './report';
+import { impactQuery, buildExperimentImpact, type ImpactRow, type ExperimentImpactQuery } from './experiment-impact';
 
 export interface OverviewResult {
   pageViews: number;
@@ -69,6 +70,38 @@ export class AnalyticsService {
     return buildReport(timeframe, range, availableFrom, events, sessions, sections.map(row => ({
       section: row.section, views: Number(row.views), deadClicks: Number(row.deadClicks), rageClicks: Number(row.rageClicks), dwellMs: Number(row.dwellMs),
     })));
+  }
+
+  async experimentImpact(tenantId: string, query: ExperimentImpactQuery) {
+    const site = await this.requireSite(tenantId, query.siteId);
+    const goal = await this.prisma.conversionGoal.findFirst({ where: { id: query.goalId, siteId: query.siteId } });
+    if (!goal) throw new NotFoundException('Meta não encontrada neste site.');
+    const range = reportRange(query.timeframe);
+    const retentionFrom = this.ch.retentionDays === null ? 0 : Date.parse(range.to) - this.ch.retentionDays * 86_400_000;
+    const availableFrom = new Date(Math.max(
+      Math.ceil(goal.createdAt.getTime() / 86_400_000) * 86_400_000,
+      Math.ceil(site.createdAt.getTime() / 86_400_000) * 86_400_000,
+      retentionFrom,
+    )).toISOString();
+    const experiments = await this.prisma.experiment.findMany({
+      where: {
+        tenantId, siteId: query.siteId, status: { in: ['running', 'paused', 'completed', 'rolled_back'] },
+        startedAt: { not: null, lt: new Date(range.to) },
+        AND: [
+          { OR: [{ primaryGoalId: query.goalId }, { primaryGoalId: null }] },
+          { OR: [{ endedAt: null }, { endedAt: { gt: new Date(range.previousFrom) } }] },
+        ],
+      },
+      select: { id: true, name: true, status: true, startedAt: true, endedAt: true, variants: { select: { id: true, isControl: true } } },
+      orderBy: { startedAt: 'asc' },
+    });
+    const started = experiments.filter((experiment): experiment is typeof experiment & { startedAt: Date } => experiment.startedAt !== null);
+    let rows: ImpactRow[] = [];
+    if (started.length && availableFrom < range.to) {
+      const sql = impactQuery(started, range, availableFrom);
+      rows = await this.ch.query<ImpactRow>(sql.sql, { ...sql.params, tenantId, siteId: query.siteId, goal: goal.name });
+    }
+    return { goal: { id: goal.id, name: goal.name, isFavorite: goal.isFavorite }, ...buildExperimentImpact(query.timeframe, range, availableFrom, started, rows) };
   }
 
   async overview(

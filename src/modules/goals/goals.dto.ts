@@ -73,6 +73,7 @@ export const CreateGoalSchema = z
     name: GoalNameSchema,
     kind: z.enum(['event', 'url', 'form_submit']).default('event'),
     matcher: z.unknown().optional(),
+    isFavorite: z.boolean().optional(),
   })
   .transform((val, ctx) => {
     const parsed = matcherSchemaFor(val.kind).safeParse(val.matcher ?? {});
@@ -82,11 +83,12 @@ export const CreateGoalSchema = z
       }
       return z.NEVER;
     }
-    return { name: val.name, kind: val.kind, matcher: parsed.data as Record<string, unknown> };
+    return { name: val.name, kind: val.kind, matcher: parsed.data as Record<string, unknown>, ...(val.isFavorite !== undefined ? { isFavorite: val.isFavorite } : {}) };
   });
 export type CreateGoalDto = z.infer<typeof CreateGoalSchema>;
 
 export const UpdateGoalSchema = z.object({
+  isFavorite: z.boolean().optional(),
   name: GoalNameSchema.optional(),
   // Validated against the goal's fixed kind server-side (kind is immutable).
   matcher: z.unknown().optional(),

@@ -4,10 +4,16 @@ import { CurrentUser } from '../../common/auth/current-user.decorator';
 import type { AuthUser } from '../../common/auth/auth.types';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { AnalyticsRangeQuerySchema, SiteQuerySchema, ReportQuerySchema, type AnalyticsRangeQuery, type ReportQuery } from './report';
+import { ExperimentImpactQuerySchema, type ExperimentImpactQuery } from './experiment-impact';
 
 @Controller('analytics')
 export class AnalyticsController {
   constructor(private readonly analytics: AnalyticsService) {}
+
+  @Get('experiment-impact')
+  experimentImpact(@CurrentUser() user: AuthUser, @Query(new ZodValidationPipe(ExperimentImpactQuerySchema)) query: ExperimentImpactQuery) {
+    return this.analytics.experimentImpact(user.tenantId, query);
+  }
 
   @Get('report')
   report(@CurrentUser() user: AuthUser, @Query(new ZodValidationPipe(ReportQuerySchema)) query: ReportQuery) {
