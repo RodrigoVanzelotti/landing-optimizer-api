@@ -56,6 +56,11 @@ export class AnalyticsController {
   results(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.analytics.experimentResults(user.tenantId, id);
   }
+
+  @Get('experiments/results')
+  siteResults(@CurrentUser() user: AuthUser, @Query(new ZodValidationPipe(SiteQuerySchema)) query: { siteId: string }) {
+    return this.analytics.siteExperimentResults(user.tenantId, query.siteId);
+  }
 }
 
 /** Convert an ISO timestamp to ClickHouse DateTime64 literal. */

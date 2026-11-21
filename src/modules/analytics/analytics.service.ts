@@ -4,6 +4,7 @@ import { ClickHouseService } from './clickhouse/clickhouse.service';
 import { analyzeExperiment, type VariantResult, type VariantStat } from './stats';
 import { buildReport, reportRange, SESSION_REPORT_SQL, type DailyMetric, type ReportQuery } from './report';
 import { impactQuery, buildExperimentImpact, type ImpactRow, type ExperimentImpactQuery } from './experiment-impact';
+import { buildExperimentResults, experimentResultsQuery, type ResultRow } from './experiment-results';
 
 export interface OverviewResult {
   pageViews: number;
@@ -302,6 +303,26 @@ export class AnalyticsService {
       };
     });
     return { experimentId, variants: analyzeExperiment(stats) };
+  }
+
+  async siteExperimentResults(tenantId: string, siteId: string) {
+    await this.requireSite(tenantId, siteId);
+    const experiments = await this.prisma.experiment.findMany({
+      where: { tenantId, siteId }, orderBy: { createdAt: 'desc' },
+      select: {
+        id: true, siteId: true, name: true, status: true, type: true, insightId: true,
+        startedAt: true, createdAt: true, endedAt: true, allocation: true, riskScore: true,
+        primaryGoal: { select: { id: true, name: true } },
+        variants: { select: { id: true, name: true, isControl: true }, orderBy: { createdAt: 'asc' } },
+      },
+    });
+    if (!experiments.length) return [];
+    const query = experimentResultsQuery(experiments);
+    const rows = await this.ch.query<ResultRow>(query.sql, { ...query.params, tenantId, siteId });
+    return buildExperimentResults(experiments, rows).map((result, index) => {
+      const { variants: _variants, primaryGoal, ...experiment } = experiments[index]!;
+      return { ...result, experiment: { ...experiment, allocation: Number(experiment.allocation) }, goal: primaryGoal };
+    });
   }
 
   private async requireSite(tenantId: string, siteId: string) {

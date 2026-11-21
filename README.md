@@ -40,6 +40,17 @@ idempotent deploy commands; package and Dockerfile changes rebuild the image.
 
 ## Key endpoints
 
+### Experiment results collection
+
+`GET /analytics/experiments/results?siteId=<uuid>` supplies all experiment cards
+with their metadata, primary-goal label, named variants and the existing A/B
+statistics. It authorizes the site, scopes metadata/events to tenant and site and
+uses one aggregated event query rather than one query per card. Repeated exposures
+and matching subsequent conversions count once per session/variant; each
+experiment keeps its own goal and end boundary. Empty samples remain zero counts,
+with unavailable comparisons. The individual-experiment endpoint remains available.
+This read-only endpoint requires no database migration or IA changes.
+
 ### Objective-based experiment impact
 
 `GET /analytics/experiment-impact?siteId=<uuid>&goalId=<uuid>&timeframe=7d|30d|6m|1y`
