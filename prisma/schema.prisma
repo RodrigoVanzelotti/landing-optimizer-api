@@ -276,6 +276,7 @@ model Experiment {
   targeting       Json             @default("{}")
   allocation      Decimal          @default(0.5) @map("allocation") @db.Decimal(4, 3)
   primaryGoalId   String?          @map("primary_goal_id")
+  insightId       String?          @map("insight_id")
   riskScore       Int              @default(0) @map("risk_score")
   winnerVariantId String?          @map("winner_variant_id")
   createdBy       String?          @map("created_by")
@@ -289,10 +290,11 @@ model Experiment {
   primaryGoal ConversionGoal? @relation(fields: [primaryGoalId], references: [id])
   variants    Variant[]
   approvals   Approval[]
-  suggestions AiSuggestion[]
+  insight     AiSuggestion?  @relation(fields: [insightId], references: [id], onDelete: SetNull)
 
   @@index([tenantId])
   @@index([siteId, status])
+  @@index([insightId])
   @@map("experiment")
 }
 
@@ -359,11 +361,13 @@ model AiSuggestion {
   model          String
   expectedImpact String?        @map("expected_impact")
   riskLevel      RiskLevel      @default(low) @map("risk_level")
-  experimentId   String?        @map("experiment_id")
+  approvedAt     DateTime?      @map("approved_at")
+  approvedByUserId String?      @map("approved_by_user_id")
+  experimentsReadyAt DateTime? @map("experiments_ready_at")
   createdAt      DateTime       @default(now()) @map("created_at")
 
   tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  experiment Experiment? @relation(fields: [experimentId], references: [id])
+  experiments Experiment[]
 
   @@index([siteId])
   @@map("ai_suggestion")

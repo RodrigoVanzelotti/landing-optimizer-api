@@ -15,17 +15,17 @@ import { ApprovalStatus } from '@prisma/client';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 
-export const ApprovalQuerySchema = z.object({ status: z.nativeEnum(ApprovalStatus).optional(), siteId: z.string().uuid().optional() });
+export const ApprovalQuerySchema = z.object({ status: z.nativeEnum(ApprovalStatus).optional(), siteId: z.string().uuid().optional(), insightId: z.string().uuid().optional() });
 
 @Injectable()
 export class ApprovalsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async listQueue(tenantId: string, status?: ApprovalStatus, siteId?: string): Promise<unknown[]> {
+  async listQueue(tenantId: string, status?: ApprovalStatus, siteId?: string, insightId?: string): Promise<unknown[]> {
     return this.prisma.approval.findMany({
       where: {
         status: status ?? 'pending',
-        experiment: { tenantId, ...(siteId ? { siteId } : {}) },
+        experiment: { tenantId, ...(siteId ? { siteId } : {}), ...(insightId ? { insightId } : {}) },
       },
       include: {
         experiment: {
@@ -57,8 +57,8 @@ export class ApprovalsController {
   constructor(private readonly approvals: ApprovalsService) {}
 
   @Get()
-  list(@CurrentUser() user: AuthUser, @Query(new ZodValidationPipe(ApprovalQuerySchema)) query: { status?: ApprovalStatus; siteId?: string }) {
-    return this.approvals.listQueue(user.tenantId, query.status, query.siteId);
+  list(@CurrentUser() user: AuthUser, @Query(new ZodValidationPipe(ApprovalQuerySchema)) query: { status?: ApprovalStatus; siteId?: string; insightId?: string }) {
+    return this.approvals.listQueue(user.tenantId, query.status, query.siteId, query.insightId);
   }
 
   @Get(':id')

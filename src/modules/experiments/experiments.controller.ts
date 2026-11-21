@@ -45,7 +45,7 @@ export class ExperimentsController {
   @Get()
   list(
     @CurrentUser() user: AuthUser,
-    @Query(new ZodValidationPipe(ExperimentQuerySchema)) query: { siteId?: string; status?: ExperimentStatus },
+    @Query(new ZodValidationPipe(ExperimentQuerySchema)) query: { siteId?: string; insightId?: string; status?: ExperimentStatus },
   ) {
     return this.experiments.list(user.tenantId, query);
   }

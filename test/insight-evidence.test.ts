@@ -134,4 +134,15 @@ describe('AI API evidence contract', () => {
     expect(result?.suggestions[0]).toMatchObject({ kpiKeys: ['ctaClicks', 'ctaClicksPerView'], designContext: { selector: '#cta', observation: 'Hipótese' } });
     expect(result?.suggestions[0]).not.toHaveProperty('kpis');
   });
+
+  it('accepts multiple experiment proposals without allowing the model to approve the insight', async () => {
+    const client = new AiClient(new ConfigService({ AI_SERVICE_URL: 'https://ai.example', AI_SERVICE_TOKEN: 'test' }) as never);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ model: 'production', score: 70, suggestions: [{
+      ...suggestion, approvedAt: '2026-11-21T12:00:00Z',
+      experimentProposals: [{ selector: '#title', proposedValue: 'Título', type: 'headline' }, { selector: '#cta', proposedValue: 'Chamada', type: 'cta' }],
+    }] }));
+    const result = await client.analyze({ siteId: 'site', pageMap: {}, metrics: {} });
+    expect(result?.suggestions[0].experimentProposals).toHaveLength(2);
+    expect(result?.suggestions[0]).not.toHaveProperty('approvedAt');
+  });
 });

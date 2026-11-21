@@ -4,6 +4,7 @@ import { ExperimentStatus } from '@prisma/client';
 
 export const ExperimentQuerySchema = z.object({
   siteId: z.string().uuid().optional(),
+  insightId: z.string().uuid().optional(),
   status: z.nativeEnum(ExperimentStatus).optional(),
 });
 

@@ -6,11 +6,11 @@ import { ExperimentStatus } from '@prisma/client';
  * with 409 Conflict.
  */
 export const TRANSITIONS: Record<ExperimentStatus, ExperimentStatus[]> = {
-  draft: ['pending_review'],
+  draft: ['pending_review', 'rejected'],
   ai_suggested: ['draft', 'pending_review', 'rejected'],
   pending_review: ['approved', 'rejected'],
-  approved: ['scheduled', 'running'],
-  scheduled: ['running', 'paused', 'rolled_back'],
+  approved: ['scheduled', 'running', 'rejected'],
+  scheduled: ['running', 'paused', 'rolled_back', 'rejected'],
   running: ['paused', 'completed', 'rolled_back'],
   paused: ['running', 'completed', 'rolled_back'],
   completed: ['rolled_back'],

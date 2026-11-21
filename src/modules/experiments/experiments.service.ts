@@ -10,6 +10,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { AuditService } from '../../common/audit/audit.module';
 import { SiteConfigService } from '../sites/site-config.service';
 import { newId } from '../../common/crypto/ids';
+import { experimentValidity, EXPERIMENT_VALIDITY_MS } from './experiment-validity';
 import {
   canTransition,
   EDITABLE_STATUSES,
@@ -90,16 +91,18 @@ export class ExperimentsService {
     });
   }
 
-  list(tenantId: string, filter: { siteId?: string; status?: ExperimentStatus }) {
-    return this.prisma.experiment.findMany({
+  async list(tenantId: string, filter: { siteId?: string; insightId?: string; status?: ExperimentStatus }) {
+    const experiments = await this.prisma.experiment.findMany({
       where: {
         tenantId,
         ...(filter.siteId ? { siteId: filter.siteId } : {}),
+        ...(filter.insightId ? { insightId: filter.insightId } : {}),
         ...(filter.status ? { status: filter.status } : {}),
       },
       orderBy: { createdAt: 'desc' },
       include: { variants: true },
     });
+    return experiments.map(experiment => ({ ...experiment, ...experimentValidity(experiment) }));
   }
 
   async get(tenantId: string, id: string) {
@@ -112,7 +115,7 @@ export class ExperimentsService {
     });
     if (!experiment) throw new NotFoundException('Experiment not found');
     if (experiment.tenantId !== tenantId) throw new ForbiddenException('Cross-tenant access');
-    return experiment;
+    return { ...experiment, ...experimentValidity(experiment) };
   }
 
   async update(user: AuthUser, id: string, dto: UpdateExperimentDto): Promise<Experiment> {
@@ -214,7 +217,7 @@ export class ExperimentsService {
     const experiment = await this.requireExperiment(user.tenantId, id);
     this.assertTransition(experiment.status, 'running');
     const updated = await this.prisma.$transaction(async tx => {
-      const changed = await this.updateCurrent(tx, experiment, { status: 'running', startedAt: experiment.startedAt ?? new Date() });
+      const changed = await this.updateCurrent(tx, experiment, { status: 'running', startedAt: experiment.status === 'paused' && experiment.startedAt ? experiment.startedAt : new Date() });
       await this.record(user, id, 'experiment.started', {}, tx);
         return changed;
     });
@@ -226,7 +229,7 @@ export class ExperimentsService {
     const experiment = await this.requireExperiment(user.tenantId, id);
     this.assertTransition(experiment.status, 'paused');
     const updated = await this.prisma.$transaction(async tx => {
-      const changed = await this.updateCurrent(tx, experiment, { status: 'paused' });
+      const changed = await this.updateCurrent(tx, experiment, { status: 'paused', ...(experiment.status === 'scheduled' ? { startedAt: null } : {}) });
       await this.record(user, id, 'experiment.paused', {}, tx);
         return changed;
     });
@@ -274,7 +277,7 @@ export class ExperimentsService {
       throw new ConflictException(`Cannot kill experiment in status ${experiment.status}`);
     }
     const updated = await this.prisma.$transaction(async tx => {
-      const changed = await this.updateCurrent(tx, experiment, { status: 'paused' });
+      const changed = await this.updateCurrent(tx, experiment, { status: 'paused', ...(experiment.status === 'scheduled' ? { startedAt: null } : {}) });
       await this.record(user, id, 'experiment.killed', {}, tx);
         return changed;
     });
@@ -285,9 +288,13 @@ export class ExperimentsService {
   /* ------------------------------- helpers -------------------------------- */
 
   private async updateCurrent(tx: Prisma.TransactionClient, experiment: Experiment, data: Prisma.ExperimentUpdateInput): Promise<Experiment> {
+    this.assertNotExpired(experiment);
     try {
       const updated = await tx.experiment.update({
-        where: { id: experiment.id, tenantId: experiment.tenantId, status: experiment.status, updatedAt: experiment.updatedAt }, data,
+        where: {
+          id: experiment.id, tenantId: experiment.tenantId, status: experiment.status, updatedAt: experiment.updatedAt,
+          ...(experimentValidity(experiment).expiresAt ? { createdAt: { gt: new Date(Date.now() - EXPERIMENT_VALIDITY_MS) } } : {}),
+        }, data,
       });
       if (experiment.status === 'running' || updated.status === 'running') {
         // Invalidate cached live config in the same commit, even if later publication fails.
@@ -313,7 +320,14 @@ export class ExperimentsService {
     const experiment = await this.prisma.experiment.findUnique({ where: { id } });
     if (!experiment) throw new NotFoundException('Experiment not found');
     if (experiment.tenantId !== tenantId) throw new ForbiddenException('Cross-tenant access');
+    this.assertNotExpired(experiment);
     return experiment;
+  }
+
+  private assertNotExpired(experiment: Experiment): void {
+    if (experimentValidity(experiment).expired) {
+      throw new ConflictException('Este experimento venceu após 7 dias sem iniciar. Aprove um novo insight para receber propostas atuais.');
+    }
   }
 
   private async requireSite(tenantId: string, siteId: string): Promise<void> {

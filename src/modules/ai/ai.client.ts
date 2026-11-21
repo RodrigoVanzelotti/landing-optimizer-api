@@ -6,6 +6,7 @@ import type { AppEnv } from '../../config/env';
 import { z } from 'zod';
 import { sanitizeSelector } from '../events/event-scrub';
 import { InsightReferencesSchema, type InsightReferences } from './insight-evidence';
+import { InsightExperimentProposalsSchema, type InsightExperimentProposal } from './experiment-proposals';
 
 const logger = Logger('AiClient');
 
@@ -21,6 +22,7 @@ const AnalyzeResultSchema = z.object({
     originalValue: z.string().max(5000).nullish().transform(value => value ?? undefined),
     expectedImpact: z.string().max(2000).nullish().transform(value => value ?? undefined),
     riskLevel: z.enum(['low', 'medium', 'high']),
+    experimentProposals: InsightExperimentProposalsSchema.nullish().transform(value => value ?? undefined).optional(),
   }).extend(InsightReferencesSchema.shape)).max(50),
 });
 
@@ -40,6 +42,7 @@ export interface AiSuggestionOut extends InsightReferences {
   originalValue?: string;
   expectedImpact?: string;
   riskLevel: 'low' | 'medium' | 'high';
+  experimentProposals?: InsightExperimentProposal[];
 }
 
 export interface AnalyzeResult {

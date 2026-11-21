@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -13,6 +14,8 @@ import { newId } from '../../common/crypto/ids';
 import { AiClient, type AiSuggestionOut } from './ai.client';
 import type { AuthUser } from '../../common/auth/auth.types';
 import { insightKpis, resolveInsightEvidence } from './insight-evidence';
+import { InsightExperimentProposalsSchema } from './experiment-proposals';
+import type { GuardrailRules } from '../guardrails/guardrails.dto';
 
 @Injectable()
 export class AiService {
@@ -93,87 +96,131 @@ export class AiService {
     return { count: result.suggestions.length, score: result.score };
   }
 
-  async listSuggestions(tenantId: string, siteId: string): Promise<unknown[]> {
+  async listSuggestions(tenantId: string, siteId: string, insightId?: string): Promise<unknown[]> {
     await this.requireSite(tenantId, siteId);
     return this.prisma.aiSuggestion.findMany({
-      where: { tenantId, siteId, model: { notIn: ['stub-v1', 'synthetic-demo'] } },
+      where: { tenantId, siteId, ...(insightId ? { id: insightId } : {}), model: { notIn: ['stub-v1', 'synthetic-demo'] } },
+      select: {
+        id: true, tenantId: true, siteId: true, kind: true, payload: true, model: true,
+        expectedImpact: true, riskLevel: true, createdAt: true, approvedAt: true, experimentsReadyAt: true,
+        experiments: { where: { tenantId, siteId }, select: { id: true, name: true, status: true }, orderBy: { createdAt: 'asc' } },
+      },
       orderBy: { createdAt: 'desc' },
       take: 100,
     });
   }
 
-  /**
-   * Convert a copy/headline/cta suggestion into an `ai_suggested` experiment
-   * (control + variant). AI never auto-publishes — this only creates a draft
-   * that still requires human approval before it can run.
-   */
-  async materialize(user: AuthUser, suggestionId: string): Promise<{ experimentId: string }> {
-    const suggestion = await this.prisma.aiSuggestion.findUnique({
-      where: { id: suggestionId },
-    });
-    if (!suggestion) throw new NotFoundException('Suggestion not found');
-    if (suggestion.tenantId !== user.tenantId) throw new ForbiddenException('Cross-tenant access');
-
-    const payload = suggestion.payload as unknown as AiSuggestionOut;
-    if (!payload.selector || !payload.proposedValue) {
-      throw new BadRequestException('Suggestion is not directly actionable');
-    }
-    const { selector, proposedValue } = payload;
-
-    const experimentId = newId();
-    const type = payload.kind === 'cta' ? 'cta' : 'headline';
+  /** Approval authorizes preparation; the future IA workflow supplies results later. */
+  async approve(user: AuthUser, suggestionId: string) {
     return this.prisma.$transaction(async tx => {
-      await tx.experiment.create({
-        data: {
-          id: experimentId,
-          tenantId: user.tenantId,
-          siteId: suggestion.siteId,
-          name: payload.title.slice(0, 160),
-          hypothesis: payload.detail.slice(0, 2000),
-          type,
-          status: 'ai_suggested',
-          allocation: 0.5,
-          targeting: {},
-          riskScore: payload.riskLevel === 'high' ? 70 : payload.riskLevel === 'medium' ? 40 : 15,
-          createdBy: user.userId,
-          variants: {
-            create: [
-              { id: newId(), name: 'control', isControl: true, weight: 0.5 },
-              {
-                id: newId(),
-                name: 'v1',
-                isControl: false,
-                weight: 0.5,
-                changes: {
-                  create: [
-                    {
-                      id: newId(),
-                      selector,
-                      op: 'set_text',
-                      originalValue: payload.originalValue ?? null,
-                      proposedValue,
-                    },
-                  ],
-                },
-              },
-            ],
-          },
-        },
-      });
-
-      await tx.aiSuggestion.update({
+      await tx.$queryRaw`SELECT id FROM ai_suggestion WHERE id = ${suggestionId} AND tenant_id = ${user.tenantId} FOR UPDATE`;
+      const suggestion = await tx.aiSuggestion.findUnique({
         where: { id: suggestionId },
-        data: { experimentId },
+        include: { tenant: { select: { archivedAt: true } }, experiments: { select: { id: true, name: true, status: true }, orderBy: { createdAt: 'asc' } } },
       });
+      if (!suggestion) throw new NotFoundException('Insight não encontrado.');
+      if (suggestion.tenantId !== user.tenantId) throw new ForbiddenException('Este insight pertence a outro espaço de trabalho.');
+      if (suggestion.tenant.archivedAt) throw new ForbiddenException('O espaço de trabalho está arquivado.');
+      if (suggestion.approvedAt) return { approvedAt: suggestion.approvedAt, experimentsReadyAt: suggestion.experimentsReadyAt, experiments: suggestion.experiments };
+      if (['stub-v1', 'synthetic-demo'].includes(suggestion.model)) throw new BadRequestException('Insights de demonstração não podem ser aprovados.');
+
+      const approvedAt = new Date();
+      const experiments = [...suggestion.experiments];
+      for (const experiment of experiments) {
+        if (!['draft', 'ai_suggested', 'pending_review'].includes(experiment.status)) continue;
+        const pending = await tx.approval.updateMany({
+          where: { experimentId: experiment.id, status: 'pending' },
+          data: { status: 'approved', approverUserId: user.userId, decidedAt: approvedAt, reason: 'Aprovado com o insight de origem.' },
+        });
+        const changed = await tx.experiment.updateMany({ where: { id: experiment.id, tenantId: user.tenantId, status: experiment.status }, data: { status: 'approved' } });
+        if (changed.count !== 1) throw new ConflictException('Um experimento foi alterado. Atualize os dados antes de aprovar o insight.');
+        if (!pending.count) await tx.approval.create({ data: {
+          id: newId(), experimentId: experiment.id, status: 'approved', approverUserId: user.userId,
+          decidedAt: approvedAt, riskScore: suggestion.riskLevel === 'high' ? 70 : suggestion.riskLevel === 'medium' ? 40 : 15,
+          reason: 'Aprovado com o insight de origem.',
+        } });
+        experiment.status = 'approved';
+        await this.audit.log({ tenantId: user.tenantId, actorUserId: user.userId, action: 'experiment.approved', targetType: 'experiment', targetId: experiment.id, metadata: { suggestionId } }, tx);
+      }
+      const experimentsReadyAt = experiments.length ? approvedAt : null;
+      await tx.aiSuggestion.update({ where: { id: suggestionId }, data: { approvedAt, approvedByUserId: user.userId, experimentsReadyAt } });
       await this.audit.log({
-        tenantId: user.tenantId,
-        actorUserId: user.userId,
-        action: 'ai.materialized',
-        targetType: 'experiment',
-        targetId: experimentId,
-        metadata: { suggestionId },
+        tenantId: user.tenantId, actorUserId: user.userId, action: 'ai.approved',
+        targetType: 'ai_suggestion', targetId: suggestionId,
+        metadata: { siteId: suggestion.siteId, experimentIds: experiments.map(experiment => experiment.id) },
       }, tx);
-      return { experimentId };
+      return { approvedAt, experimentsReadyAt, experiments };
+    });
+  }
+
+  /** Internal API integration point; does not invoke or schedule the IA module. */
+  async completeExperiments(tenantId: string, suggestionId: string, rawProposals: unknown) {
+    return this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM ai_suggestion WHERE id = ${suggestionId} AND tenant_id = ${tenantId} FOR UPDATE`;
+      const suggestion = await tx.aiSuggestion.findUnique({
+        where: { id: suggestionId },
+        include: { tenant: { select: { archivedAt: true } }, experiments: { select: { id: true, name: true, status: true }, orderBy: { createdAt: 'asc' } } },
+      });
+      if (!suggestion) throw new NotFoundException('Insight não encontrado.');
+      if (suggestion.tenantId !== tenantId) throw new ForbiddenException('Este insight pertence a outro espaço de trabalho.');
+      if (suggestion.tenant.archivedAt) throw new ForbiddenException('O espaço de trabalho está arquivado.');
+      if (!suggestion.approvedAt) throw new ConflictException('O insight precisa ser aprovado antes de gerar experimentos.');
+      if (suggestion.experimentsReadyAt) return { experimentsReadyAt: suggestion.experimentsReadyAt, experiments: suggestion.experiments };
+      if (!suggestion.approvedByUserId) throw new ConflictException('A aprovação do insight não possui um responsável registrado.');
+      const parsed = InsightExperimentProposalsSchema.safeParse(rawProposals);
+      if (!parsed.success || !parsed.data.length) throw new BadRequestException('A preparação precisa fornecer propostas válidas de experimento.');
+
+      const guardrail = await tx.brandGuardrail.findUnique({ where: { siteId: suggestion.siteId } });
+      const rules = (guardrail?.rules ?? {}) as GuardrailRules;
+      for (const proposal of parsed.data) {
+        if ((rules.maxLength && proposal.proposedValue.length > rules.maxLength) ||
+          rules.bannedWords?.some(word => proposal.proposedValue.toLowerCase().includes(word.toLowerCase()))) {
+          throw new BadRequestException('Uma proposta não atende às diretrizes atuais da marca.');
+        }
+      }
+
+      const payload = suggestion.payload as unknown as AiSuggestionOut;
+      const experiments = [...suggestion.experiments];
+      const riskScore = suggestion.riskLevel === 'high' ? 70 : suggestion.riskLevel === 'medium' ? 40 : 15;
+      for (const [index, proposal] of parsed.data.entries()) {
+        const suffix = parsed.data.length > 1 ? ` · ${index + 1}` : '';
+        const title = payload.title || 'Experimento do insight';
+        const experiment = await tx.experiment.create({
+          data: {
+            id: newId(), insightId: suggestionId, tenantId, siteId: suggestion.siteId,
+            name: proposal.name ?? `${title.slice(0, 160 - suffix.length)}${suffix}`,
+            hypothesis: (payload.detail ?? '').slice(0, 2000),
+            type: proposal.type ?? (payload.kind === 'cta' ? 'cta' : payload.kind === 'headline' ? 'headline' : 'copy'),
+            status: 'approved', allocation: 0.5, targeting: {}, riskScore, createdBy: suggestion.approvedByUserId,
+            variants: { create: [
+              { id: newId(), name: 'Controle', isControl: true, weight: 0.5 },
+              { id: newId(), name: 'Proposta', isControl: false, weight: 0.5,
+                changes: { create: [{
+                  id: newId(), selector: proposal.selector, op: 'set_text',
+                  originalValue: proposal.originalValue ?? null, proposedValue: proposal.proposedValue,
+                }] },
+              },
+            ] },
+            approvals: { create: {
+              id: newId(), status: 'approved', riskScore, approverUserId: suggestion.approvedByUserId,
+              decidedAt: suggestion.approvedAt, reason: 'Aprovação herdada do insight de origem.',
+            } },
+          },
+          select: { id: true, name: true, status: true },
+        });
+        experiments.push(experiment);
+        await this.audit.log({
+          tenantId, actorUserId: suggestion.approvedByUserId, action: 'ai.materialized',
+          targetType: 'experiment', targetId: experiment.id, metadata: { suggestionId, automated: true },
+        }, tx);
+      }
+      const experimentsReadyAt = new Date();
+      await tx.aiSuggestion.update({ where: { id: suggestionId }, data: { experimentsReadyAt } });
+      await this.audit.log({
+        tenantId, actorUserId: suggestion.approvedByUserId, action: 'ai.experiments_ready',
+        targetType: 'ai_suggestion', targetId: suggestionId, metadata: { experimentIds: experiments.map(experiment => experiment.id) },
+      }, tx);
+      return { experimentsReadyAt, experiments };
     });
   }
 

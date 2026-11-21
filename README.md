@@ -40,11 +40,83 @@ idempotent deploy commands; package and Dockerfile changes rebuild the image.
 
 ## Key endpoints
 
+### Insight approval and experiment preparation
+
+The dashboard groups experiments into five stages: awaiting approval (also
+containing approved proposals ready to start), experimenting, results available,
+expired, and denied. Approving an insight remains the only approval required for
+its experiments; the board does not introduce another review step.
+
+Unstarted proposals expire exactly seven elapsed days after the experiment's
+`createdAt`, not after the insight's creation or approval. Approval and scheduling
+do not renew this deadline. Running tests, genuinely paused tests that already
+started, completed tests and refused proposals do not expire. Pausing/cancelling
+a schedule before any start cannot bypass expiry. A valid approved or scheduled
+proposal may be refused without running it.
+
+Expiry is derived at read/write time: list/detail responses add `expiresAt`
+(nullable ISO timestamp) and `expired`; the stored lifecycle status and audit
+history remain intact. Expired records stay readable, but mutations return 409.
+Writes guard the deadline inside the transaction and atomic experiment update,
+so a stale browser cannot start an expired test. No expiration job, database
+migration or change to the IA module is needed for this rule.
+
+Insights and experiments use a one-to-many relationship: each experiment has
+an optional `insightId`, while each insight returns `approvedAt`,
+`experimentsReadyAt` and an `experiments` list (`id`, `name`, `status`).
+
+Business decision: approving an insight also authorizes/approves its experiments.
+They must be ready within **24 hours after insight approval**, without a second
+human approval. Preparation will use batch processing in the IA module. The UI
+communicates preparation, the deadline, readiness and overdue status without
+exposing that technical mechanism. Approval does not automatically start a test
+or publish a site configuration.
+
+`POST /ai/suggestions/:id/approve` requires an editor and atomically records the
+approval and its audit event; it does **not** generate experiments, call IA,
+enqueue work or create placeholder results. `approvedByUserId` is stored for
+approval inheritance and excluded from the public insight listing. Repeated
+approvals are idempotent.
+
+The internal `AiService.completeExperiments(tenantId, insightId, proposals)` is
+the API integration point for future completed results. It rejects unapproved
+insights, validates the complete delivery, creates multiple `approved`
+experiments with inherited approval records, and records readiness/audit in one
+transaction. Repeated deliveries do not create duplicates. It does not invoke
+or implement the IA module and has no user-facing HTTP route. The future
+authenticated worker/callback, batch execution and throughput controls remain
+to be implemented with the IA module. The 24-hour commitment depends on that
+integration; this change implements state, validation and communication only.
+
+An insight may provide an optional `experimentProposals` array (at most 10 text
+experiments). These are optional possibilities, not ready-made experiment records.
+Completed deliveries use the same proposal shape. Each entry has `selector`, `proposedValue`, optional `originalValue`,
+optional `name`, and optional `type` (`copy`, `cta`, `headline`). Proposals are
+validated against safe selectors and current brand guidelines when preparation
+results arrive. Earlier single `selector`/`proposedValue` payloads remain readable.
+An insight without ready-made proposals can also be approved for later preparation.
+
+`GET /sites/:id/ai/suggestions?insightId=...` loads a particular origin insight,
+including older records. `/experiments` and `/approvals` accept `insightId` as
+well as their existing site/status filters. All queries retain tenant/site scope.
+The former `materialize` endpoint and the manual `/sites/:id/ai/analyze` route
+are removed. Internal `AiService.analyze` remains available for the API/IA
+automatic generation workflow, whose scheduling/throughput is future work.
+
+Apply migration `20261121220000_insight_approval_experiments` before releasing
+the API/dashboard. It preserves existing associations without inventing prior
+approvals. Explicitly approving a legacy insight retains existing experiments,
+approves its earlier drafts and preserves live/terminal states; it never duplicates them.
+Ambiguous or cross-workspace legacy associations stop migration for review.
+The migration removes the old `experiment_id` column: coordinate application
+with API rollout so the earlier API revision is no longer serving insight requests.
+
 ### Optional insight evidence contract
 
 The dashboard and API support variable insight cards. This step prepares the
-contract; the Python IA module and its automatic traffic-triggered generation
-are separate work. Manual generation stays hidden in the dashboard.
+contract; the Python IA module, its automatic traffic-triggered insight generation
+and batch experiment preparation are separate work. No manual insight generation
+is available in the dashboard or its public control-plane routes.
 
 `AiClient` accepts these optional fields on each suggestion returned by
 `/internal/analyze` (illustrative references, not real site data):
