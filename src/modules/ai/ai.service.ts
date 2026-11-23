@@ -102,7 +102,7 @@ export class AiService {
       where: { tenantId, siteId, ...(insightId ? { id: insightId } : {}), model: { notIn: ['stub-v1', 'synthetic-demo'] } },
       select: {
         id: true, tenantId: true, siteId: true, kind: true, payload: true, model: true,
-        expectedImpact: true, riskLevel: true, createdAt: true, approvedAt: true, experimentsReadyAt: true,
+        expectedImpact: true, riskLevel: true, createdAt: true, approvedAt: true, rejectedAt: true, experimentsReadyAt: true,
         experiments: { where: { tenantId, siteId }, select: { id: true, name: true, status: true }, orderBy: { createdAt: 'asc' } },
       },
       orderBy: { createdAt: 'desc' },
@@ -121,6 +121,7 @@ export class AiService {
       if (!suggestion) throw new NotFoundException('Insight não encontrado.');
       if (suggestion.tenantId !== user.tenantId) throw new ForbiddenException('Este insight pertence a outro espaço de trabalho.');
       if (suggestion.tenant.archivedAt) throw new ForbiddenException('O espaço de trabalho está arquivado.');
+      if (suggestion.rejectedAt) throw new ConflictException('Este insight já foi rejeitado. Atualize a lista de insights.');
       if (suggestion.approvedAt) return { approvedAt: suggestion.approvedAt, experimentsReadyAt: suggestion.experimentsReadyAt, experiments: suggestion.experiments };
       if (['stub-v1', 'synthetic-demo'].includes(suggestion.model)) throw new BadRequestException('Insights de demonstração não podem ser aprovados.');
 
@@ -153,6 +154,28 @@ export class AiService {
     });
   }
 
+  async reject(user: AuthUser, suggestionId: string) {
+    return this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM ai_suggestion WHERE id = ${suggestionId} AND tenant_id = ${user.tenantId} FOR UPDATE`;
+      const suggestion = await tx.aiSuggestion.findUnique({
+        where: { id: suggestionId }, include: { tenant: { select: { archivedAt: true } } },
+      });
+      if (!suggestion) throw new NotFoundException('Insight não encontrado.');
+      if (suggestion.tenantId !== user.tenantId) throw new ForbiddenException('Este insight pertence a outro espaço de trabalho.');
+      if (suggestion.tenant.archivedAt) throw new ForbiddenException('O espaço de trabalho está arquivado.');
+      if (suggestion.rejectedAt) return { rejectedAt: suggestion.rejectedAt };
+      if (suggestion.approvedAt) throw new ConflictException('Este insight já foi aprovado. Acompanhe seus experimentos na aba Experimentos.');
+      if (['stub-v1', 'synthetic-demo'].includes(suggestion.model)) throw new BadRequestException('Insights de demonstração não podem ser rejeitados.');
+      const rejectedAt = new Date();
+      await tx.aiSuggestion.update({ where: { id: suggestionId }, data: { rejectedAt, rejectedByUserId: user.userId } });
+      await this.audit.log({
+        tenantId: user.tenantId, actorUserId: user.userId, action: 'ai.rejected',
+        targetType: 'ai_suggestion', targetId: suggestionId, metadata: { siteId: suggestion.siteId },
+      }, tx);
+      return { rejectedAt };
+    });
+  }
+
   /** Internal API integration point; does not invoke or schedule the IA module. */
   async completeExperiments(tenantId: string, suggestionId: string, rawProposals: unknown) {
     return this.prisma.$transaction(async tx => {
@@ -164,7 +187,7 @@ export class AiService {
       if (!suggestion) throw new NotFoundException('Insight não encontrado.');
       if (suggestion.tenantId !== tenantId) throw new ForbiddenException('Este insight pertence a outro espaço de trabalho.');
       if (suggestion.tenant.archivedAt) throw new ForbiddenException('O espaço de trabalho está arquivado.');
-      if (!suggestion.approvedAt) throw new ConflictException('O insight precisa ser aprovado antes de gerar experimentos.');
+      if (suggestion.rejectedAt || !suggestion.approvedAt) throw new ConflictException('O insight precisa estar aprovado antes de gerar experimentos.');
       if (suggestion.experimentsReadyAt) return { experimentsReadyAt: suggestion.experimentsReadyAt, experiments: suggestion.experiments };
       if (!suggestion.approvedByUserId) throw new ConflictException('A aprovação do insight não possui um responsável registrado.');
       const parsed = InsightExperimentProposalsSchema.safeParse(rawProposals);

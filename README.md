@@ -90,7 +90,7 @@ so a stale browser cannot start an expired test. No expiration job, database
 migration or change to the IA module is needed for this rule.
 
 Insights and experiments use a one-to-many relationship: each experiment has
-an optional `insightId`, while each insight returns `approvedAt`,
+an optional `insightId`, while each insight returns `approvedAt`, `rejectedAt`,
 `experimentsReadyAt` and an `experiments` list (`id`, `name`, `status`).
 
 Business decision: approving an insight also authorizes/approves its experiments.
@@ -105,6 +105,16 @@ approval and its audit event; it does **not** generate experiments, call IA,
 enqueue work or create placeholder results. `approvedByUserId` is stored for
 approval inheritance and excluded from the public insight listing. Repeated
 approvals are idempotent.
+
+`POST /ai/suggestions/:id/reject` requires an editor or admin and only accepts
+pending insights. Rejection records its timestamp, actor and audit event in the
+same transaction; repeated rejection is idempotent. It preserves linked
+experiments, prevents subsequent approval/preparation and cannot cancel an
+already approved insight. Approval and rejection serialize on the insight row.
+The listing exposes `rejectedAt`, but excludes the deciding actor. Apply additive
+migration `20261123150000_insight_rejection` before releasing this API revision.
+Dashboard status filters operate on the latest 100 insights returned by the feed;
+accepted includes insights whose experiments are still being prepared.
 
 The internal `AiService.completeExperiments(tenantId, insightId, proposals)` is
 the API integration point for future completed results. It rejects unapproved

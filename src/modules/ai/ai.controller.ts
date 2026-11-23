@@ -22,4 +22,10 @@ export class AiController {
   approve(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.ai.approve(user, id);
   }
+
+  @Post('ai/suggestions/:id/reject')
+  @Roles('editor')
+  reject(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.ai.reject(user, id);
+  }
 }

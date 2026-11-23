@@ -24,9 +24,10 @@ function setup(payload: Record<string, unknown> = { title: 'Insight', detail: 'H
     id: 'insight', tenantId: 'tenant', siteId: 'site', model: 'production', riskLevel: 'low',
     tenant: { archivedAt: null as Date | null },
     approvedAt: null as Date | null, approvedByUserId: null as string | null, experimentsReadyAt: null as Date | null,
+    rejectedAt: null as Date | null, rejectedByUserId: null as string | null,
     payload, experiments: [] as LinkedExperiment[],
   };
-  type Update = Partial<Pick<typeof insight, 'approvedAt' | 'approvedByUserId' | 'experimentsReadyAt'>>;
+  type Update = Partial<Pick<typeof insight, 'approvedAt' | 'approvedByUserId' | 'experimentsReadyAt' | 'rejectedAt' | 'rejectedByUserId'>>;
   const tx = {
     $queryRaw: vi.fn().mockResolvedValue([{ id: 'insight' }]),
     aiSuggestion: {
@@ -52,6 +53,48 @@ function setup(payload: Record<string, unknown> = { title: 'Insight', detail: 'H
 }
 
 describe('insight approval and deferred preparation', () => {
+  it('persists rejection once, preserves linked experiments and blocks approval and delivery', async () => {
+    const { service, insight, tx, audit } = setup();
+    insight.experiments.push({ id: 'linked', name: 'Existente', status: 'draft' });
+    const result = await service.reject(user, 'insight');
+    expect(result.rejectedAt).toBeInstanceOf(Date);
+    expect(insight.rejectedByUserId).toBe('user');
+    expect(await service.reject(user, 'insight')).toEqual(result);
+    expect(tx.aiSuggestion.update).toHaveBeenCalledOnce();
+    expect(tx.$queryRaw.mock.calls[0].slice(1)).toEqual(['insight', 'tenant']);
+    expect(audit.log).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ action: 'ai.rejected', actorUserId: 'user' }), tx);
+    await expect(service.approve(user, 'insight')).rejects.toMatchObject({ status: 409 });
+    await expect(service.completeExperiments('tenant', 'insight', proposals)).rejects.toMatchObject({ status: 409 });
+    expect(insight.experiments).toEqual([{ id: 'linked', name: 'Existente', status: 'draft' }]);
+    expect(tx.experiment.create).not.toHaveBeenCalled();
+    expect(tx.experiment.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('does not reject an approved insight or cancel preparation', async () => {
+    const { service, insight } = setup();
+    await service.approve(user, 'insight');
+    await expect(service.reject(user, 'insight')).rejects.toMatchObject({ status: 409 });
+    expect(insight.rejectedAt).toBeNull();
+    expect(insight.approvedAt).toBeInstanceOf(Date);
+  });
+
+  it('rolls rejection back when the audit cannot be recorded', async () => {
+    const { service, insight, audit } = setup();
+    audit.log.mockRejectedValue(new Error('Audit unavailable'));
+    await expect(service.reject(user, 'insight')).rejects.toThrow('Audit unavailable');
+    expect(insight.rejectedAt).toBeNull();
+  });
+
+  it.each(['foreign', 'archived', 'missing', 'demo'])('protects rejection for %s insights', async kind => {
+    const { service, insight, tx } = setup();
+    if (kind === 'foreign') insight.tenantId = 'other';
+    if (kind === 'archived') insight.tenant.archivedAt = new Date();
+    if (kind === 'missing') tx.aiSuggestion.findUnique.mockResolvedValueOnce(null as never);
+    if (kind === 'demo') insight.model = 'synthetic-demo';
+    await expect(service.reject(user, 'insight')).rejects.toMatchObject({ status: kind === 'missing' ? 404 : kind === 'demo' ? 400 : 403 });
+    expect(tx.aiSuggestion.update).not.toHaveBeenCalled();
+  });
+
   it('records approval without generating experiments or performing analysis', async () => {
     const { insight, tx, audit, service } = setup();
     expect(await service.approve(user, 'insight')).toMatchObject({ approvedAt: expect.any(Date), experimentsReadyAt: null, experiments: [] });
@@ -181,7 +224,7 @@ describe('insight approval and deferred preparation', () => {
 });
 
 const httpState = { role: 'editor' };
-const httpAi = { approve: vi.fn(), analyze: vi.fn(), listSuggestions: vi.fn() };
+const httpAi = { approve: vi.fn(), reject: vi.fn(), analyze: vi.fn(), listSuggestions: vi.fn() };
 @Module({ controllers: [AiController], providers: [
   { provide: AiService, useValue: httpAi },
   { provide: APP_GUARD, useValue: { canActivate(context: ExecutionContext) { context.switchToHttp().getRequest().user = { ...user, role: httpState.role }; return true; } } },
@@ -208,6 +251,15 @@ describe('insight approval HTTP boundary', () => {
     httpState.role = 'viewer'; httpAi.approve.mockClear();
     expect((await app.inject({ method: 'POST', url: '/v1/ai/suggestions/insight/approve' })).statusCode).toBe(403);
     expect(httpAi.approve).not.toHaveBeenCalled();
+  });
+
+  it.each(['admin', 'editor', 'viewer'])('restricts rejection to editors and admins (%s)', async role => {
+    httpState.role = role;
+    httpAi.reject.mockResolvedValue({ rejectedAt: new Date() });
+    const response = await app.inject({ method: 'POST', url: '/v1/ai/suggestions/insight/reject' });
+    expect(response.statusCode).toBe(role === 'viewer' ? 403 : 201);
+    if (role === 'viewer') expect(httpAi.reject).not.toHaveBeenCalled();
+    else expect(httpAi.reject).toHaveBeenCalledWith({ ...user, role }, 'insight');
   });
 
   it('does not expose manual analysis or the previous direct-materialization action', async () => {

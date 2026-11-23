@@ -367,6 +367,8 @@ model AiSuggestion {
   riskLevel      RiskLevel      @default(low) @map("risk_level")
   approvedAt     DateTime?      @map("approved_at")
   approvedByUserId String?      @map("approved_by_user_id")
+  rejectedAt   DateTime?      @map("rejected_at")
+  rejectedByUserId String?     @map("rejected_by_user_id")
   experimentsReadyAt DateTime? @map("experiments_ready_at")
   createdAt      DateTime       @default(now()) @map("created_at")
 
