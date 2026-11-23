@@ -2,6 +2,7 @@
 export function postgresQuery(sql: string, params: Record<string, unknown>) {
   const values: unknown[] = [];
   const translated = sql
+    .replace(/INTERVAL 24 HOUR/g, "INTERVAL '24 hours'")
     .replace(/count\(\)/g, 'count(*)')
     .replace(/countIf\(([^)]+)\)/g, 'count(*) FILTER (WHERE $1)')
     .replace(/sumIf\((\w+), ([^)]+)\)/g, 'coalesce(sum($1) FILTER (WHERE $2), 0)')

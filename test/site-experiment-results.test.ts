@@ -50,3 +50,13 @@ it('authorizes the site before data reads and returns all summaries with one eve
   expect(await service.siteExperimentResults('tenant', 'site')).toEqual([]);
   expect(query).not.toHaveBeenCalled();
 });
+
+it('keeps final results readable when retained events are unavailable', async () => {
+  const variantResults = [{ variantId: 'control', isControl: true, exposures: 10000, conversions: 1000, conversionRate: .1 }, { variantId: 'proposal', isControl: false, exposures: 10000, conversions: 1200, conversionRate: .12 }];
+  const snapshot = { version: 1, experimentId: 'first', conclusive: true, coverageComplete: true, recordedAt: '2026-11-20', goal: { id: 'goal', name: 'Original goal' }, experiment: { siteId: 'site' }, variants: variantResults, series: [{ date: '2026-11-20', variants: [] }] };
+  const db = { site: { findUnique: vi.fn().mockResolvedValue({ tenantId: 'tenant' }) }, experiment: { findMany: vi.fn().mockResolvedValue([{ ...experiments[0], siteId: 'site', name: 'Name', allocation: .5, resultSnapshot: snapshot }]) } };
+  const query = vi.fn().mockRejectedValue(new Error('event store unavailable'));
+  const results = await new AnalyticsService(db as never, { query } as never).siteExperimentResults('tenant', 'site');
+  expect(query).not.toHaveBeenCalled();
+  expect(results[0]).toMatchObject({ conclusive: true, variants: variantResults, goal: { name: 'Original goal' } });
+});

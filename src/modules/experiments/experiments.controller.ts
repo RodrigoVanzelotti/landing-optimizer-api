@@ -11,6 +11,8 @@ import { ExperimentStatus } from '@prisma/client';
 import { ExperimentsService } from './experiments.service';
 import {
   ApproveSchema,
+  AcceptSchema,
+  type AcceptDto,
   CompleteSchema,
   CreateExperimentSchema,
   RejectSchema,
@@ -127,6 +129,12 @@ export class ExperimentsController {
   @Roles('editor')
   rollback(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.experiments.rollback(user, id);
+  }
+
+  @Post(':id/accept')
+  @Roles('editor')
+  accept(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body(new ZodValidationPipe(AcceptSchema)) dto: AcceptDto) {
+    return this.experiments.accept(user, id, dto.variantId);
   }
 
   @Post(':id/kill')

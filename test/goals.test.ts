@@ -47,7 +47,7 @@ it('sets the primary goal on a draft with site ownership checks and freezes it a
   const findFirst = vi.fn().mockResolvedValue({ id: 'goal' });
   const update = vi.fn().mockResolvedValue({});
   const tx = { experiment: { findUnique, update }, conversionGoal: { findFirst } };
-  const service = new ExperimentsService({ ...tx, $transaction: async (fn: (client: typeof tx) => Promise<unknown>) => fn(tx) } as never, {} as never, { log: vi.fn().mockResolvedValue(undefined) } as never);
+  const service = new ExperimentsService({ ...tx, $transaction: async (fn: (client: typeof tx) => Promise<unknown>) => fn(tx) } as never, {} as never, { log: vi.fn().mockResolvedValue(undefined) } as never, {} as never);
   const user = { userId: 'editor', tenantId: 'tenant', email: 'editor@example.com', role: 'editor' as const };
   await service.update(user, 'experiment', UpdateExperimentSchema.parse({ primaryGoalId: 'goal' }));
   expect(findFirst).toHaveBeenCalledWith({ where: { id: 'goal', siteId: 'site' }, select: { id: true } });

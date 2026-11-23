@@ -1,10 +1,11 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ClickHouseService } from './clickhouse/clickhouse.service';
-import { analyzeExperiment, type VariantResult, type VariantStat } from './stats';
 import { buildReport, reportRange, SESSION_REPORT_SQL, type DailyMetric, type ReportQuery } from './report';
 import { impactQuery, buildExperimentImpact, type ImpactRow, type ExperimentImpactQuery } from './experiment-impact';
 import { buildExperimentResults, experimentResultsQuery, type ResultRow } from './experiment-results';
+import { storedReport } from './experiment-report';
+import { evaluateEvidence, type EvaluationPlan } from '../experiments/experiment-evidence';
 
 export interface OverviewResult {
   pageViews: number;
@@ -250,78 +251,27 @@ export class AnalyticsService {
     };
   }
 
-  async experimentResults(
-    tenantId: string,
-    experimentId: string,
-  ): Promise<{ experimentId: string; variants: VariantResult[] }> {
-    const experiment = await this.prisma.experiment.findUnique({
-      where: { id: experimentId },
-      include: { variants: true, primaryGoal: true },
-    });
-    if (!experiment) throw new NotFoundException('Experiment not found');
-    if (experiment.tenantId !== tenantId) throw new ForbiddenException('Cross-tenant access');
-
-    const rows = await this.ch.query<{
-      variant_id: string;
-      exposures: string;
-      conversions: string;
-    }>(
-      `WITH exposures AS (
-         SELECT session_id, variant_id, min(event_time) AS first_exposure
-         FROM events
-         WHERE tenant_id = {tenantId:UUID} AND site_id = {siteId:UUID}
-           AND experiment_id = {experimentId:UUID} AND event_name = 'exposure' AND is_bot = 0
-         GROUP BY session_id, variant_id
-       ), conversions AS (
-         SELECT session_id, max(event_time) AS converted_at
-         FROM events
-         WHERE tenant_id = {tenantId:UUID} AND site_id = {siteId:UUID}
-           AND event_name = 'conversion' AND is_bot = 0
-           ${experiment.primaryGoal ? 'AND goal = {goal:String}' : ''}
-           ${experiment.endedAt ? 'AND event_time <= {endedAt:DateTime64}' : ''}
-         GROUP BY session_id
-       )
-       SELECT e.variant_id, count() AS exposures,
-              sum(CASE WHEN c.converted_at >= e.first_exposure THEN 1 ELSE 0 END) AS conversions
-       FROM exposures e LEFT JOIN conversions c ON e.session_id = c.session_id
-       GROUP BY e.variant_id`,
-      {
-        tenantId, siteId: experiment.siteId, experimentId,
-        ...(experiment.primaryGoal ? { goal: experiment.primaryGoal.name } : {}),
-        ...(experiment.endedAt ? { endedAt: experiment.endedAt.toISOString().replace('T', ' ').replace('Z', '') } : {}),
-      },
-    );
-    const byId = new Map(rows.map((r) => [r.variant_id, r]));
-
-    const stats: VariantStat[] = experiment.variants.map((v) => {
-      const row = byId.get(v.id);
-      return {
-        variantId: v.id,
-        isControl: v.isControl,
-        exposures: row ? Number(row.exposures) : 0,
-        conversions: row ? Number(row.conversions) : 0,
-      };
-    });
-    return { experimentId, variants: analyzeExperiment(stats) };
-  }
-
   async siteExperimentResults(tenantId: string, siteId: string) {
     await this.requireSite(tenantId, siteId);
     const experiments = await this.prisma.experiment.findMany({
       where: { tenantId, siteId }, orderBy: { createdAt: 'desc' },
       select: {
         id: true, siteId: true, name: true, status: true, type: true, insightId: true,
-        startedAt: true, createdAt: true, endedAt: true, allocation: true, riskScore: true,
+        startedAt: true, createdAt: true, endedAt: true, allocation: true, riskScore: true, resultSnapshot: true, evaluationPlan: true,
         primaryGoal: { select: { id: true, name: true } },
         variants: { select: { id: true, name: true, isControl: true }, orderBy: { createdAt: 'asc' } },
       },
     });
     if (!experiments.length) return [];
-    const query = experimentResultsQuery(experiments);
-    const rows = await this.ch.query<ResultRow>(query.sql, { ...query.params, tenantId, siteId });
+    const pending = experiments.filter(experiment => !storedReport(experiment.resultSnapshot));
+    const query = pending.length ? experimentResultsQuery(pending) : null;
+    const rows = query ? await this.ch.query<ResultRow>(query.sql, { ...query.params, tenantId, siteId }) : [];
     return buildExperimentResults(experiments, rows).map((result, index) => {
-      const { variants: _variants, primaryGoal, ...experiment } = experiments[index]!;
-      return { ...result, experiment: { ...experiment, allocation: Number(experiment.allocation) }, goal: primaryGoal };
+      const { variants: _variants, primaryGoal, resultSnapshot, evaluationPlan: _plan, ...experiment } = experiments[index]!;
+      const snapshot = storedReport(resultSnapshot);
+      const evidence = _plan ? evaluateEvidence(result.variants, _plan as unknown as EvaluationPlan, new Date(Date.now() - 86_400_000)) : { variants: [] };
+      const current = { ...result, variants: result.variants.map(variant => ({ ...variant, decision: evidence.variants.find(item => item.variantId === variant.variantId)?.decision ?? 'collecting', significant: evidence.variants.some(item => item.variantId === variant.variantId && ['improvement', 'decline'].includes(item.decision)) })) };
+      return { ...(snapshot ?? current), experiment: { ...experiment, allocation: Number(experiment.allocation) }, goal: snapshot ? snapshot.goal : primaryGoal };
     });
   }
 

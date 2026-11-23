@@ -12,6 +12,7 @@ export interface VariantStat {
 }
 
 export interface VariantResult extends VariantStat {
+  decision?: 'collecting' | 'improvement' | 'decline' | 'equivalent';
   conversionRate: number;
   /** Relative lift vs control (fraction); null for the control itself. */
   lift: number | null;

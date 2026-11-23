@@ -14,6 +14,7 @@ import { experimentValidity, EXPERIMENT_VALIDITY_MS } from './experiment-validit
 import {
   canTransition,
   EDITABLE_STATUSES,
+  LIVE_STATUSES,
 } from './experiment-state-machine';
 import type {
   ApproveDto,
@@ -24,6 +25,8 @@ import type {
   UpdateExperimentDto,
 } from './experiments.dto';
 import type { AuthUser } from '../../common/auth/auth.types';
+import { ExperimentReportService } from '../analytics/experiment-report.service';
+import { storedReport } from '../analytics/experiment-report';
 
 const HIGH_RISK_OPS = new Set(['section_order', 'section_visibility', 'set_html_safe', 'hide']);
 
@@ -33,6 +36,7 @@ export class ExperimentsService {
     private readonly prisma: PrismaService,
     private readonly siteConfig: SiteConfigService,
     private readonly audit: AuditService,
+    private readonly reports: ExperimentReportService,
   ) {}
 
   async create(user: AuthUser, dto: CreateExperimentDto): Promise<Experiment> {
@@ -102,7 +106,7 @@ export class ExperimentsService {
       orderBy: { createdAt: 'desc' },
       include: { variants: true },
     });
-    return experiments.map(experiment => ({ ...experiment, ...experimentValidity(experiment) }));
+    return experiments.map(({ resultSnapshot, evaluationPlan: _plan, ...experiment }) => ({ ...experiment, ...experimentValidity(experiment), resultState: storedReport(resultSnapshot) ? 'ready' : experiment.status === 'completed' ? 'pending_validation' : undefined }));
   }
 
   async get(tenantId: string, id: string) {
@@ -115,7 +119,8 @@ export class ExperimentsService {
     });
     if (!experiment) throw new NotFoundException('Experiment not found');
     if (experiment.tenantId !== tenantId) throw new ForbiddenException('Cross-tenant access');
-    return { ...experiment, ...experimentValidity(experiment) };
+    const { resultSnapshot, evaluationPlan: _plan, ...detail } = experiment;
+    return { ...detail, ...experimentValidity(experiment), resultState: storedReport(resultSnapshot) ? 'ready' : experiment.status === 'completed' ? 'pending_validation' : undefined };
   }
 
   async update(user: AuthUser, id: string, dto: UpdateExperimentDto): Promise<Experiment> {
@@ -216,8 +221,9 @@ export class ExperimentsService {
   async start(user: AuthUser, id: string): Promise<Experiment> {
     const experiment = await this.requireExperiment(user.tenantId, id);
     this.assertTransition(experiment.status, 'running');
+    const plan = experiment.evaluationPlan ?? await this.reports.planFor(experiment, new Date());
     const updated = await this.prisma.$transaction(async tx => {
-      const changed = await this.updateCurrent(tx, experiment, { status: 'running', startedAt: experiment.status === 'paused' && experiment.startedAt ? experiment.startedAt : new Date() });
+      const changed = await this.updateCurrent(tx, experiment, { status: 'running', startedAt: experiment.status === 'paused' && experiment.startedAt ? experiment.startedAt : new Date(), ...(plan ? { evaluationPlan: plan as Prisma.InputJsonValue } : {}) });
       await this.record(user, id, 'experiment.started', {}, tx);
         return changed;
     });
@@ -237,22 +243,21 @@ export class ExperimentsService {
     return updated;
   }
 
-  async complete(user: AuthUser, id: string, dto: CompleteDto): Promise<Experiment> {
+  async complete(user: AuthUser, id: string, _dto: CompleteDto): Promise<Experiment> {
+    await this.requireExperiment(user.tenantId, id);
+    throw new ConflictException('Experiments are completed automatically after sufficient evidence');
+  }
+
+  async accept(user: AuthUser, id: string, variantId: string): Promise<Experiment> {
     const experiment = await this.requireExperiment(user.tenantId, id);
-    this.assertTransition(experiment.status, 'completed');
-    if (dto.winnerVariantId && !await this.prisma.variant.findFirst({ where: { id: dto.winnerVariantId, experimentId: id }, select: { id: true } })) {
-      throw new BadRequestException('Winner must belong to this experiment');
-    }
+    this.assertTransition(experiment.status, 'accepted');
+    const snapshot = storedReport(experiment.resultSnapshot);
+    if (!snapshot || snapshot.experimentId !== id || !snapshot.variants.some(variant => variant.variantId === variantId && !variant.isControl && variant.exposures > 0)) throw new ConflictException('A conclusive result and a proposed variant are required');
+    if (!await this.prisma.variant.findFirst({ where: { id: variantId, experimentId: id, isControl: false } })) throw new BadRequestException('Unknown proposed variant');
     const updated = await this.prisma.$transaction(async tx => {
-      const changed = await this.updateCurrent(tx, experiment, {
-        status: 'completed',
-        endedAt: new Date(),
-        winnerVariantId: dto.winnerVariantId ?? null,
-      });
-      await this.record(user, id, 'experiment.completed', {
-        winnerVariantId: dto.winnerVariantId,
-      }, tx);
-        return changed;
+      const changed = await this.updateCurrent(tx, experiment, { status: 'accepted', winnerVariantId: variantId });
+      await this.record(user, id, 'experiment.accepted', { variantId }, tx);
+      return changed;
     });
     await this.siteConfig.publish(experiment.siteId, user.userId);
     return updated;
@@ -262,7 +267,7 @@ export class ExperimentsService {
     const experiment = await this.requireExperiment(user.tenantId, id);
     this.assertTransition(experiment.status, 'rolled_back');
     const updated = await this.prisma.$transaction(async tx => {
-      const changed = await this.updateCurrent(tx, experiment, { status: 'rolled_back', endedAt: new Date() });
+      const changed = await this.updateCurrent(tx, experiment, { status: 'rolled_back', endedAt: experiment.endedAt ?? new Date() });
       await this.record(user, id, 'experiment.rolled_back', {}, tx);
         return changed;
     });
@@ -296,7 +301,7 @@ export class ExperimentsService {
           ...(experimentValidity(experiment).expiresAt ? { createdAt: { gt: new Date(Date.now() - EXPERIMENT_VALIDITY_MS) } } : {}),
         }, data,
       });
-      if (experiment.status === 'running' || updated.status === 'running') {
+      if (LIVE_STATUSES.includes(experiment.status) || LIVE_STATUSES.includes(updated.status)) {
         // Invalidate cached live config in the same commit, even if later publication fails.
         await tx.site.update({ where: { id: experiment.siteId }, data: { configVersion: { increment: 1 } } });
       }

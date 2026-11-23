@@ -1,30 +1,31 @@
 import { execFileSync } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
-import { AnalyticsService } from '../src/modules/analytics/analytics.service';
+import { ExperimentReportService } from '../src/modules/analytics/experiment-report.service';
 import { postgresQuery } from '../src/modules/analytics/clickhouse/postgres-query';
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const tenant = id(1), site = id(2), experimentId = id(3), control = id(4), variant = id(5);
 const experiment = {
+  id: experimentId, name: 'Test', status: 'running', startedAt: new Date('2026-01-01T00:00:00Z'),
   tenantId: tenant, siteId: site, primaryGoal: { name: 'lead_received' },
-  endedAt: new Date('2026-01-01T00:00:20Z'),
+  endedAt: new Date('2026-01-02T00:00:20Z'),
   variants: [{ id: control, isControl: true }, { id: variant, isControl: false }],
 };
 
 it('scopes both sides of attribution by site/tenant and binds the primary goal', async () => {
-  const query = vi.fn().mockResolvedValue([{ variant_id: control, exposures: '2', conversions: '1' }]);
+  const query = vi.fn().mockResolvedValue([{ date: '2026-01-01', variant_id: control, exposures: '2', conversions: '1' }]);
   const findUnique = vi.fn().mockResolvedValue(experiment);
-  const service = new AnalyticsService({ experiment: { findUnique } } as never, { query } as never);
-  const result = await service.experimentResults(tenant, experimentId);
-  expect(findUnique).toHaveBeenCalledWith({ where: { id: experimentId }, include: { variants: true, primaryGoal: true } });
+  const service = new ExperimentReportService({ experiment: { findUnique } } as never, { query } as never);
+  const result = await service.report(tenant, experimentId);
+  expect(findUnique).toHaveBeenCalledWith({ where: { id: experimentId }, include: { variants: { orderBy: { createdAt: 'asc' } }, primaryGoal: true } });
   const [sql, params] = query.mock.calls[0]!;
   expect((sql.match(/tenant_id = \{tenantId:UUID\} AND site_id = \{siteId:UUID\}/g) ?? []).length).toBe(2);
-  expect(sql).toContain('AND goal = {goal:String}');
-  expect(params).toEqual({ tenantId: tenant, siteId: site, experimentId, goal: 'lead_received', endedAt: '2026-01-01 00:00:20.000' });
+  expect(sql).toContain('goal = {goal:String}');
+  expect(params).toMatchObject({ tenantId: tenant, siteId: site, experimentId, goal: 'lead_received', cutoff: '2026-01-01 00:00:20.000', to: '2026-01-02 00:00:20.000' });
   expect(result.variants[0]).toMatchObject({ exposures: 2, conversions: 1, conversionRate: 0.5 });
   expect(result.variants[1]).toMatchObject({ exposures: 0, conversions: 0 });
   findUnique.mockResolvedValue({ ...experiment, tenantId: id(9) });
-  await expect(service.experimentResults(tenant, experimentId)).rejects.toThrow('Cross-tenant access');
+  await expect(service.report(tenant, experimentId)).rejects.toThrow('Cross-tenant access');
   expect(query).toHaveBeenCalledTimes(1);
 });
 
@@ -36,7 +37,7 @@ describe.skipIf(process.env.GOAL_SQL_INTEGRATION !== '1')('goal attribution on r
       ? ['psql', '-U', 'postgres', '-v', 'ON_ERROR_STOP=1', '-tA']
       : ['clickhouse-client', '--multiquery'])], { input: statement, encoding: 'utf8', windowsHide: true });
     const quote = (value: unknown) => `'${String(value).replace(/'/g, "''")}'`;
-    const time = (second: number) => `2026-01-01 00:00:${String(second).padStart(2, '0')}.000`;
+    const time = (second: number) => `2026-01-${second === 21 ? '02' : '01'} 00:00:${String(second).padStart(2, '0')}.000`;
     const rows: unknown[][] = [];
     const add = (session: string, v: string, event: string, second: number, goal = '', t = tenant, s = site, bot = 0) => {
       rows.push([t, s, session, experimentId, v, event, time(second), goal, bot]);
@@ -58,7 +59,7 @@ describe.skipIf(process.env.GOAL_SQL_INTEGRATION !== '1')('goal attribution on r
       event_name ${text}, event_time ${backend === 'postgres' ? 'timestamp(3)' : 'DateTime64(3)'}, goal ${text}, is_bot ${backend === 'postgres' ? 'integer' : 'UInt8'}
     ) ${backend === 'postgres' ? '' : 'ENGINE = Memory'};
     INSERT INTO events VALUES ${rows.map(row => `(${row.map(quote).join(',')})`).join(',')};`);
-    const service = new AnalyticsService({ experiment: { findUnique: vi.fn().mockResolvedValue(experiment) } } as never, {
+    const service = new ExperimentReportService({ experiment: { findUnique: vi.fn().mockResolvedValue(experiment) } } as never, {
       query: async (statement: string, params: Record<string, unknown>) => {
         let query: string;
         if (backend === 'postgres') {
@@ -72,7 +73,7 @@ describe.skipIf(process.env.GOAL_SQL_INTEGRATION !== '1')('goal attribution on r
         return sql(query).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
       },
     } as never);
-    const result = await service.experimentResults(tenant, experimentId);
+    const result = await service.report(tenant, experimentId);
     for (const item of result.variants) expect(item).toMatchObject({ exposures: 2, conversions: 1, conversionRate: 0.5 });
   });
 });

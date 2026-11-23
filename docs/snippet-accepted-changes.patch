@@ -1,0 +1,111 @@
+diff --git a/src/index.ts b/src/index.ts
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -29,6 +29,10 @@
+     if (Math.random() > config.sampling) {
+       // Not sampled: still expose a no-op API so customer calls don't error.
+       installNoopApi();
++      onReady(() => {
++        const engine = new ExperimentEngine(config, '', detectDevice(), () => undefined);
++        void engine.run(true);
++      });
+       return;
+     }
+ 
+diff --git a/src/experiments.ts b/src/experiments.ts
+--- a/src/experiments.ts
++++ b/src/experiments.ts
+@@ -26,7 +26,7 @@
+     private readonly onExposure: (experimentId: string, variantId: string) => void,
+   ) {}
+ 
+-  async run(): Promise<void> {
++  async run(permanentOnly = false): Promise<void> {
+     const site = await this.fetchConfig();
+     if (!site) return;
+     const ok = await verifySignature(this.config.publicKey, site);
+@@ -35,6 +35,7 @@
+       return;
+     }
+     for (const exp of site.experiments) {
++      if (permanentOnly && exp.permanent !== true) continue;
+       try {
+         this.evaluate(exp);
+       } catch {
+diff --git a/src/types.ts b/src/types.ts
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -109,6 +109,7 @@
+ }
+ 
+ export interface ConfigExperiment {
++  permanent?: boolean;
+   id: string;
+   allocation: number;
+   targeting?: ExperimentTargeting;
+diff --git a/test/permanent.test.ts b/test/permanent.test.ts
+new file mode 100644
+--- /dev/null
++++ b/test/permanent.test.ts
+@@ -0,0 +1,33 @@
++import { afterEach, beforeEach, expect, it, vi } from 'vitest';
++import { ExperimentEngine } from '../src/experiments';
++import type { SdkConfig } from '../src/types';
++
++const config: SdkConfig = { siteId: 'site', ingestKey: 'key', publicKey: 'eA==', ingestUrl: '/events', configUrl: '/config', sampling: 0, debug: false };
++const verify = vi.fn();
++beforeEach(() => {
++  document.body.innerHTML = '<h1>Base</h1><p>Original</p>';
++  verify.mockResolvedValue(true);
++  vi.stubGlobal('crypto', { subtle: { importKey: vi.fn().mockResolvedValue({}), verify } });
++  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ siteId: 'site', version: 1, sig: 'eA==', experiments: [
++    { id: 'accepted', permanent: true, allocation: 1, variants: [{ id: 'kept', weight: 1, isControl: false, changes: [{ selector: 'h1', op: 'set_text', value: 'Accepted' }] }] },
++    { id: 'running', allocation: 1, variants: [{ id: 'candidate', weight: 1, isControl: false, changes: [{ selector: 'p', op: 'set_text', value: 'Test' }] }] },
++  ] }) }));
++});
++afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
++it('applies only signed permanent changes outside the analytics sample', async () => {
++  const exposure = vi.fn();
++  await new ExperimentEngine(config, '', 'desktop', exposure).run(true);
++  expect(document.querySelector('h1')?.textContent).toBe('Accepted');
++  expect(document.querySelector('p')?.textContent).toBe('Original');
++  expect(exposure).toHaveBeenCalledTimes(1);
++  expect(exposure).toHaveBeenCalledWith('accepted', 'kept');
++});
++it('preserves the normal experiment flow for sampled sessions', async () => {
++  await new ExperimentEngine(config, 'session', 'desktop', vi.fn()).run();
++  expect(document.querySelector('p')?.textContent).toBe('Test');
++});
++it('never applies an untrusted permanent configuration', async () => {
++  verify.mockResolvedValue(false);
++  await new ExperimentEngine(config, '', 'desktop', vi.fn()).run(true);
++  expect(document.querySelector('h1')?.textContent).toBe('Base');
++});
+diff --git a/test/sampling.test.ts b/test/sampling.test.ts
+new file mode 100644
+--- /dev/null
++++ b/test/sampling.test.ts
+@@ -0,0 +1,23 @@
++import { afterEach, expect, it, vi } from 'vitest';
++import { ExperimentEngine } from '../src/experiments';
++import { getSessionId } from '../src/session';
++import { Tracker } from '../src/tracker';
++import { Transport } from '../src/transport';
++
++const state = vi.hoisted(() => ({ run: vi.fn().mockResolvedValue(undefined) }));
++vi.mock('../src/config', () => ({ CAPTURE_PARAM: 'lo_capture', sdkScriptSrc: () => '', readConfig: () => ({ sampling: 0 }) }));
++vi.mock('../src/experiments', () => ({ ExperimentEngine: vi.fn().mockImplementation(function () { return { run: state.run }; }) }));
++vi.mock('../src/session', () => ({ getSessionId: vi.fn() }));
++vi.mock('../src/tracker', () => ({ Tracker: vi.fn() }));
++vi.mock('../src/transport', () => ({ Transport: vi.fn() }));
++afterEach(() => { vi.restoreAllMocks(); });
++it('keeps tracking disabled and creates no session ID while running permanent changes for unsampled visits', async () => {
++  vi.spyOn(Math, 'random').mockReturnValue(.5);
++  vi.spyOn(document, 'readyState', 'get').mockReturnValue('complete');
++  await import('../src/index');
++  expect(ExperimentEngine).toHaveBeenCalledWith(expect.anything(), '', expect.anything(), expect.any(Function));
++  expect(state.run).toHaveBeenCalledTimes(1);
++  expect(state.run).toHaveBeenCalledWith(true);
++  expect(getSessionId).not.toHaveBeenCalled(); expect(Tracker).not.toHaveBeenCalled(); expect(Transport).not.toHaveBeenCalled();
++  expect(() => window.LandingOptimizer?.conversion('lead')).not.toThrow();
++});

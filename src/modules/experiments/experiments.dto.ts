@@ -105,5 +105,7 @@ export type RejectDto = z.infer<typeof RejectSchema>;
 export const ScheduleSchema = z.object({ startAt: z.string().datetime() });
 export type ScheduleDto = z.infer<typeof ScheduleSchema>;
 
-export const CompleteSchema = z.object({ winnerVariantId: z.string().optional() });
+export const AcceptSchema = z.object({ variantId: z.string().uuid() });
+export type AcceptDto = z.infer<typeof AcceptSchema>;
+export const CompleteSchema = z.object({ winnerVariantId: z.string().optional() }).default({});
 export type CompleteDto = z.infer<typeof CompleteSchema>;

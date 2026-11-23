@@ -21,6 +21,7 @@ export interface WireVariant {
 export interface WireExperiment {
   id: string;
   allocation: number;
+  permanent?: true;
   targeting?: Record<string, unknown>;
   variants: WireVariant[];
 }
@@ -67,18 +68,19 @@ export class SiteConfigService {
     if (!site) throw new Error('site not found');
 
     const experiments = await db.experiment.findMany({
-      where: { siteId, status: 'running' },
+      where: { siteId, status: { in: ['running', 'accepted'] } },
       include: { variants: { include: { changes: true } } },
     });
 
     const version = site.configVersion;
-    const wireExperiments: WireExperiment[] = experiments.map((exp) => ({
+    const wireExperiments: WireExperiment[] = experiments.filter(exp => exp.status !== 'accepted' || exp.variants.some(variant => variant.id === exp.winnerVariantId && !variant.isControl)).map((exp) => ({
       id: exp.id,
-      allocation: Number(exp.allocation),
+      allocation: exp.status === 'accepted' ? 1 : Number(exp.allocation),
+      ...(exp.status === 'accepted' ? { permanent: true as const } : {}),
       targeting: normalizeTargeting(exp.targeting),
-      variants: exp.variants.map((v) => ({
+      variants: exp.variants.filter(variant => exp.status !== 'accepted' || variant.id === exp.winnerVariantId).map((v) => ({
         id: v.id,
-        weight: Number(v.weight),
+        weight: exp.status === 'accepted' ? 1 : Number(v.weight),
         isControl: v.isControl,
         changes: v.changes.map((c) => {
           const change: WireChange = { selector: c.selector, op: c.op };

@@ -42,20 +42,20 @@ it('rejects state changes based on a stale experiment and rejects a foreign winn
   const prisma = { experiment: { findUnique: vi.fn().mockResolvedValue(experiment), update }, variant: { findFirst: vi.fn().mockResolvedValue(null) }, $transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma) };
   const publish = vi.fn();
   const audit = vi.fn();
-  const service = new ExperimentsService(prisma as never, { publish } as never, { log: audit } as never);
+  const service = new ExperimentsService(prisma as never, { publish } as never, { log: audit } as never, {} as never);
   const user = { userId: 'editor', tenantId: 'tenant', role: 'editor', email: 'editor@example.com' } as const;
   await expect(service.pause(user, experiment.id)).rejects.toMatchObject({ status: 409 });
   expect(update).toHaveBeenCalledWith({ where: { id: experiment.id, tenantId: 'tenant', status: 'running', updatedAt: experiment.updatedAt }, data: { status: 'paused' } });
   expect(publish).not.toHaveBeenCalled();
   expect(audit).not.toHaveBeenCalled();
-  await expect(service.complete(user, experiment.id, { winnerVariantId: 'foreign-variant' })).rejects.toMatchObject({ status: 400 });
+  await expect(service.complete(user, experiment.id, { winnerVariantId: 'foreign-variant' })).rejects.toMatchObject({ status: 409 });
 });
 
 it('invalidates live config in the state-change transaction even if publication fails', async () => {
   const siteUpdate = vi.fn();
   const experiment = { id: 'experiment', tenantId: 'tenant', siteId: 'site', status: 'running', updatedAt: new Date() };
   const prisma = { experiment: { findUnique: vi.fn().mockResolvedValue(experiment), update: vi.fn().mockResolvedValue({ ...experiment, status: 'paused' }) }, site: { update: siteUpdate }, $transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma) };
-  const service = new ExperimentsService(prisma as never, { publish: vi.fn().mockRejectedValue(new Error('publisher unavailable')) } as never, { log: vi.fn() } as never);
+  const service = new ExperimentsService(prisma as never, { publish: vi.fn().mockRejectedValue(new Error('publisher unavailable')) } as never, { log: vi.fn() } as never, {} as never);
   await expect(service.pause({ userId: 'editor', tenantId: 'tenant', role: 'editor', email: 'editor@example.com' }, 'experiment')).rejects.toThrow('publisher unavailable');
   expect(siteUpdate).toHaveBeenCalledWith({ where: { id: 'site' }, data: { configVersion: { increment: 1 } } });
 });

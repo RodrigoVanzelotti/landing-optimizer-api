@@ -18,7 +18,7 @@ function setup(status: ExperimentStatus, age = EXPERIMENT_VALIDITY_MS, startedAt
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(db)),
   };
   const publish = vi.fn();
-  const service = new ExperimentsService(db as never, { publish } as never, { log: vi.fn() } as never);
+  const service = new ExperimentsService(db as never, { publish } as never, { log: vi.fn() } as never, { planFor: vi.fn().mockResolvedValue(null) } as never);
   return { experiment, db, publish, service };
 }
 

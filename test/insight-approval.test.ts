@@ -170,7 +170,7 @@ describe('insight approval and deferred preparation', () => {
 
   it('filters experiments and their review queue by origin without losing site and tenant boundaries', async () => {
     const findMany = vi.fn().mockResolvedValue([]);
-    await new ExperimentsService({ experiment: { findMany } } as never, {} as never, {} as never).list('tenant', { siteId: 'site', insightId: 'insight' });
+    await new ExperimentsService({ experiment: { findMany } } as never, {} as never, {} as never, {} as never).list('tenant', { siteId: 'site', insightId: 'insight' });
     expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { tenantId: 'tenant', siteId: 'site', insightId: 'insight' } }));
     findMany.mockClear();
     await new ApprovalsService({ approval: { findMany } } as never).listQueue('tenant', 'pending', 'site', 'insight');

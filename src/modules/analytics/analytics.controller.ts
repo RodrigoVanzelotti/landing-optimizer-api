@@ -1,5 +1,6 @@
 import { Controller, Get, Param, Query } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service';
+import { ExperimentReportService } from './experiment-report.service';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import type { AuthUser } from '../../common/auth/auth.types';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
@@ -8,7 +9,12 @@ import { ExperimentImpactQuerySchema, type ExperimentImpactQuery } from './exper
 
 @Controller('analytics')
 export class AnalyticsController {
-  constructor(private readonly analytics: AnalyticsService) {}
+  constructor(private readonly analytics: AnalyticsService, private readonly reports: ExperimentReportService) {}
+
+  @Get('experiments/:id/report')
+  experimentReport(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.reports.report(user.tenantId, id);
+  }
 
   @Get('experiment-impact')
   experimentImpact(@CurrentUser() user: AuthUser, @Query(new ZodValidationPipe(ExperimentImpactQuerySchema)) query: ExperimentImpactQuery) {
@@ -53,8 +59,9 @@ export class AnalyticsController {
   }
 
   @Get('experiments/:id/results')
-  results(@CurrentUser() user: AuthUser, @Param('id') id: string) {
-    return this.analytics.experimentResults(user.tenantId, id);
+  async results(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    const report = await this.reports.report(user.tenantId, id);
+    return { experimentId: id, variants: report.variants };
   }
 
   @Get('experiments/results')

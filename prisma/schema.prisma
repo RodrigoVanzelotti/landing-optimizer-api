@@ -59,6 +59,7 @@ enum ExperimentStatus {
   running
   paused
   completed
+  accepted
   rejected
   rolled_back
 }
@@ -280,6 +281,8 @@ model Experiment {
   insightId       String?          @map("insight_id")
   riskScore       Int              @default(0) @map("risk_score")
   winnerVariantId String?          @map("winner_variant_id")
+  evaluationPlan  Json?            @map("evaluation_plan")
+  resultSnapshot  Json?            @map("result_snapshot")
   createdBy       String?          @map("created_by")
   createdAt       DateTime         @default(now()) @map("created_at")
   updatedAt       DateTime         @updatedAt @map("updated_at")

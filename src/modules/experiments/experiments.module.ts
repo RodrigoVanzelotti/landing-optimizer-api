@@ -2,10 +2,11 @@ import { Module } from '@nestjs/common';
 import { ExperimentsService } from './experiments.service';
 import { ExperimentsController } from './experiments.controller';
 import { SitesModule } from '../sites/sites.module';
+import { ExperimentEvaluator } from './experiment-evaluator.service';
 
 @Module({
   imports: [SitesModule],
-  providers: [ExperimentsService],
+  providers: [ExperimentsService, ExperimentEvaluator],
   controllers: [ExperimentsController],
   exports: [ExperimentsService],
 })
