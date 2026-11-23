@@ -17,6 +17,9 @@ import { ControlPlaneRateGuard } from '../src/common/auth/control-plane-rate.gua
 import { SnapshotsController } from '../src/modules/snapshots/snapshots.controller';
 import { SnapshotsService } from '../src/modules/snapshots/snapshots.service';
 import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter';
+import { SitesController } from '../src/modules/sites/sites.controller';
+import { SitesService } from '../src/modules/sites/sites.service';
+import { SiteConfigService } from '../src/modules/sites/site-config.service';
 
 const siteId = '11111111-1111-4111-8111-111111111111';
 const otherSiteId = '22222222-2222-4222-8222-222222222222';
@@ -34,18 +37,22 @@ const prisma = {
 };
 const auth = new AuthService(prisma as never, jwt, config as never, {} as never);
 const snapshots = new SnapshotsService(prisma as never, redis as never, { log: vi.fn() } as never);
+const sites = { remove: vi.fn() };
 const reflector = new Reflector();
 Reflect.defineMetadata('design:paramtypes', [AuthService, PasswordResetService], AuthController);
 Reflect.defineMetadata('design:paramtypes', [SnapshotsService], SnapshotsController);
+Reflect.defineMetadata('design:paramtypes', [SitesService, SiteConfigService], SitesController);
 
 @Module({
-  controllers: [AuthController, SnapshotsController],
+  controllers: [AuthController, SnapshotsController, SitesController],
   providers: [
     { provide: ConfigService, useValue: config },
     { provide: RedisService, useValue: redis },
     { provide: AuthService, useValue: auth },
     { provide: PasswordResetService, useValue: {} },
     { provide: SnapshotsService, useValue: snapshots },
+    { provide: SitesService, useValue: sites },
+    { provide: SiteConfigService, useValue: {} },
     { provide: AuthBoundaryGuard, useValue: new AuthBoundaryGuard(config as never, redis as never) },
     { provide: APP_GUARD, useValue: new JwtAuthGuard(jwt, reflector, prisma as never) },
     { provide: APP_GUARD, useValue: new RolesGuard(reflector) },
@@ -68,6 +75,20 @@ describe('HTTP security boundaries with real global guards', () => {
   });
   beforeEach(() => { state.role = 'editor'; state.version = 0; vi.clearAllMocks(); });
   afterAll(async () => { await app?.close(); });
+
+  it('allows site deletion only for administrators and validates the confirmation body', async () => {
+    const headers = { authorization: `Bearer ${token()}` };
+    for (const role of ['viewer', 'editor']) {
+      state.role = role;
+      expect((await app.inject({ method: 'DELETE', url: `/v1/sites/${siteId}`, headers, payload: { confirmation: 'example.test' } })).statusCode).toBe(403);
+    }
+    expect(sites.remove).not.toHaveBeenCalled();
+    state.role = 'admin';
+    expect((await app.inject({ method: 'DELETE', url: `/v1/sites/${siteId}`, headers, payload: {} })).statusCode).toBe(400);
+    expect(sites.remove).not.toHaveBeenCalled();
+    expect((await app.inject({ method: 'DELETE', url: `/v1/sites/${siteId}`, headers, payload: { confirmation: 'example.test' } })).statusCode).toBe(204);
+    expect(sites.remove).toHaveBeenCalledWith(expect.objectContaining({ role: 'admin', tenantId: 'tenant' }), siteId, { confirmation: 'example.test' });
+  });
 
   it('rejects public-key uploads and refresh tokens presented as access tokens', async () => {
     for (const headers of [{}, { authorization: `Bearer ${token({ typ: 'refresh' })}` }]) {

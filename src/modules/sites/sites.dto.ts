@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+export const DeleteSiteSchema = z.object({ confirmation: z.string().trim().min(1).max(255) }).strict();
+export type DeleteSiteDto = z.infer<typeof DeleteSiteSchema>;
+
 export const CreateSiteSchema = z.object({
   name: z.string().min(1).max(120),
   primaryDomain: z

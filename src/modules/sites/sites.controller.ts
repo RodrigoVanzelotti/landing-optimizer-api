@@ -12,6 +12,8 @@ import { SitesService } from './sites.service';
 import { SiteConfigService } from './site-config.service';
 import {
   AddOriginSchema,
+  DeleteSiteSchema,
+  type DeleteSiteDto,
   CreateSiteSchema,
   UpdateSiteSchema,
   type AddOriginDto,
@@ -57,6 +59,14 @@ export class SitesController {
     @Body(new ZodValidationPipe(UpdateSiteSchema)) dto: UpdateSiteDto,
   ) {
     return this.sites.update(user, id, dto);
+  }
+
+  @Delete(':id')
+  @Roles('admin')
+  @HttpCode(204)
+  async remove(@CurrentUser() user: AuthUser, @Param('id') id: string,
+    @Body(new ZodValidationPipe(DeleteSiteSchema)) dto: DeleteSiteDto): Promise<void> {
+    await this.sites.remove(user, id, dto);
   }
 
   @Get(':id/snippet')

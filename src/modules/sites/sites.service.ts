@@ -1,5 +1,6 @@
 import {
   ForbiddenException,
+  BadRequestException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -9,10 +10,12 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { CryptoService } from '../../common/crypto/crypto.service';
 import { newId } from '../../common/crypto/ids';
 import type { AppEnv } from '../../config/env';
-import type { AddOriginDto, CreateSiteDto, UpdateSiteDto } from './sites.dto';
+import type { AddOriginDto, CreateSiteDto, UpdateSiteDto, DeleteSiteDto } from './sites.dto';
 import type { Prisma } from '@prisma/client';
 import type { AuthUser } from '../../common/auth/auth.types';
 import { writeAudit } from '../../common/audit/audit.module';
+import { ClickHouseService } from '../analytics/clickhouse/clickhouse.service';
+import { RedisService } from '../../common/redis/redis.module';
 
 @Injectable()
 export class SitesService {
@@ -20,6 +23,8 @@ export class SitesService {
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
     private readonly config: ConfigService<AppEnv, true>,
+    private readonly analytics: ClickHouseService,
+    private readonly redis: RedisService,
   ) {}
 
   async create(user: AuthUser, dto: CreateSiteDto): Promise<PublicSite> {
@@ -57,6 +62,41 @@ export class SitesService {
       orderBy: { createdAt: 'desc' },
     });
     return sites.map(toPublicSite);
+  }
+
+  async remove(user: AuthUser, id: string, dto: DeleteSiteDto): Promise<void> {
+    if (user.role !== 'admin') throw new ForbiddenException('Somente administradores podem excluir sites.');
+    await this.prisma.$transaction(async tx => {
+      const members = await tx.$queryRaw<{ role: string }[]>`SELECT role FROM user_membership WHERE tenant_id = ${user.tenantId} AND user_id = ${user.userId} FOR SHARE`;
+      if (members[0]?.role !== 'admin') throw new ForbiddenException('Somente administradores podem excluir sites.');
+      // Writers hold a shared site lock until ingestion/cache writes finish.
+      await tx.$queryRaw`SELECT id FROM site WHERE id = ${id} FOR UPDATE`;
+      const site = await tx.site.findUnique({ where: { id } });
+      if (!site) return; // A retry after a lost response is safe.
+      if (site.tenantId !== user.tenantId) throw new ForbiddenException('Cross-tenant access denied');
+      if (dto.confirmation.trim() !== site.primaryDomain) throw new BadRequestException('Digite exatamente o domínio do site para confirmar.');
+      const resources = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM experiment WHERE site_id = ${id}
+        UNION SELECT id FROM ai_suggestion WHERE site_id = ${id}
+        UNION SELECT id FROM conversion_goal WHERE site_id = ${id}
+        UNION SELECT id FROM site_origin WHERE site_id = ${id}
+        UNION SELECT id FROM brand_guardrail WHERE site_id = ${id}
+        UNION SELECT id FROM page_map WHERE site_id = ${id}
+        UNION SELECT id FROM page_snapshot WHERE site_id = ${id}`;
+      // External stores cannot roll back: failures must remain visible and retryable.
+      await this.analytics.deleteSiteData(user.tenantId, id);
+      await this.redis.delStrict(`config:${id}`);
+      await tx.$executeRaw`DELETE FROM events WHERE tenant_id = ${user.tenantId} AND site_id = ${id}`;
+      await tx.site.delete({ where: { id } });
+      // Run after cascades have waited for any existing resource mutations to commit.
+      await tx.auditLog.deleteMany({ where: { tenantId: user.tenantId, OR: [
+        { targetType: 'site', targetId: id },
+        { targetId: { in: resources.map(resource => resource.id) } },
+        { metadata: { path: ['siteId'], equals: id } },
+        { metadata: { path: ['favoriteSiteId'], equals: id } },
+      ] } });
+      await writeAudit(tx, { tenantId: user.tenantId, actorUserId: user.userId, action: 'site.deleted', targetType: 'site', targetId: id });
+    }, { timeout: 60000 });
   }
 
   async get(tenantId: string, id: string): Promise<PublicSite> {

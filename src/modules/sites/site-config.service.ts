@@ -57,9 +57,9 @@ export class SiteConfigService {
       const site = await tx.site.update({ where: { id: siteId }, data: { configVersion: { increment: 1 } } });
       const result = await this.compile(siteId, tx);
       if (actorUserId) await writeAudit(tx, { tenantId: site.tenantId, actorUserId, action: 'site.config_published', targetType: 'site', targetId: siteId, metadata: { version: result.version } });
+      await this.redis.set(cacheKey(siteId), JSON.stringify(result), CONFIG_TTL_SECONDS);
       return result;
     });
-    await this.redis.set(cacheKey(siteId), JSON.stringify(signed), CONFIG_TTL_SECONDS);
     return signed;
   }
 
@@ -114,9 +114,13 @@ export class SiteConfigService {
         /* fall through to rebuild */
       }
     }
-    const config = await this.compile(siteId);
-    await this.redis.set(cacheKey(siteId), JSON.stringify(config), CONFIG_TTL_SECONDS);
-    return config;
+    return this.prisma.$transaction(async tx => {
+      const sites = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM site WHERE id = ${siteId} AND status = 'active' FOR SHARE`;
+      if (!sites.length) return null;
+      const config = await this.compile(siteId, tx);
+      await this.redis.set(cacheKey(siteId), JSON.stringify(config), CONFIG_TTL_SECONDS);
+      return config;
+    });
   }
 }
 

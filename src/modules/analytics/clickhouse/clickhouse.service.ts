@@ -80,11 +80,13 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
       return;
     }
     try {
-      await this.client.insert({
-        table: 'events',
-        values: rows,
-        format: 'JSONEachRow',
-      });
+      const { site_id: siteId, tenant_id: tenantId } = rows[0];
+      if (rows.some(row => row.site_id !== siteId || row.tenant_id !== tenantId)) throw new Error('Mixed-site event batch');
+      await this.prisma.$transaction(async tx => {
+        const sites = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM site WHERE id = ${siteId} AND tenant_id = ${tenantId} AND status = 'active' FOR SHARE`;
+        if (!sites.length) throw new Error('Site no longer accepts events');
+        await this.client.insert({ table: 'events', values: rows, format: 'JSONEachRow', clickhouse_settings: { wait_for_async_insert: 1 } });
+      }, { timeout: 30000 });
     } catch (err) {
       logger.error('dependency_error', {
         dependency: 'clickhouse',
@@ -92,6 +94,16 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
         reason: safeReason(err),
       });
       throw err;
+    }
+  }
+
+  async deleteSiteData(tenantId: string, siteId: string): Promise<void> {
+    if (this.postgres) return; // PostgreSQL events are deleted in the site's transaction.
+    for (const table of ['events', 'mv_experiment_stats', 'mv_daily_funnel', 'mv_section_performance']) {
+      await this.client.command({
+        query: `ALTER TABLE ${table} DELETE WHERE tenant_id = {tenantId:UUID} AND site_id = {siteId:UUID}`,
+        query_params: { tenantId, siteId }, clickhouse_settings: { mutations_sync: '2' },
+      });
     }
   }
 

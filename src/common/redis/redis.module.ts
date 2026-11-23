@@ -64,6 +64,10 @@ export class RedisService implements OnModuleDestroy {
     }
   }
 
+  async delStrict(key: string): Promise<void> {
+    await this.client?.del(key);
+  }
+
   /**
    * Fixed-window token bucket. Returns true when the request is allowed.
    */

@@ -229,6 +229,7 @@ model Site {
   guardrail       BrandGuardrail?
   pageMaps        PageMap[]
   snapshots       PageSnapshot[]
+  suggestions     AiSuggestion[]
   analyticsEvents AnalyticsEvent[] @ignore
 
   @@index([tenantId])
@@ -373,6 +374,7 @@ model AiSuggestion {
   createdAt      DateTime       @default(now()) @map("created_at")
 
   tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  site       Site        @relation(fields: [siteId], references: [id], onDelete: Cascade)
   experiments Experiment[]
 
   @@index([siteId])

@@ -62,12 +62,13 @@ it('invalidates live config in the state-change transaction even if publication 
 
 it('rebuilds an outdated signed config without a public GET mutating the database', async () => {
   const site = { id: 'site', tenantId: 'tenant', status: 'active', configVersion: 4, samplingRate: 1, privateKeyEnc: Buffer.from('key'), tenant: { archivedAt: null } };
-  const prisma = { site: { findUnique: vi.fn().mockResolvedValue(site), update: vi.fn() }, experiment: { findMany: vi.fn().mockResolvedValue([]) }, $transaction: vi.fn() };
+  const prisma = { site: { findUnique: vi.fn().mockResolvedValue(site), update: vi.fn() }, experiment: { findMany: vi.fn().mockResolvedValue([]) }, $queryRaw: vi.fn().mockResolvedValue([{ id: 'site' }]), $transaction: vi.fn() };
+  prisma.$transaction.mockImplementation(async fn => fn(prisma));
   const redis = { get: vi.fn().mockResolvedValue(JSON.stringify({ siteId: 'site', version: 3, experiments: [{ id: 'stale-running-experiment' }] })), set: vi.fn() };
   const service = new SiteConfigService(prisma as never, redis as never, { signConfig: () => 'signature' } as never);
   expect(await service.get('site')).toMatchObject({ version: 4, experiments: [], sig: 'signature' });
   expect(prisma.site.update).not.toHaveBeenCalled();
-  expect(prisma.$transaction).not.toHaveBeenCalled();
+  expect(prisma.$transaction).toHaveBeenCalledOnce();
 });
 
 it('validates analytics ranges and enum filters before they reach storage', () => {

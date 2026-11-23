@@ -160,7 +160,7 @@ it.skipIf(!process.env['AUDIT_TEST_DATABASE_URL'])('keeps real writes atomic wit
     const invitation = await team.invite(user, { name: 'New', email: 'new@audit.test', role: 'viewer' });
     await team.revoke(user, invitation.id);
     await team.changeRole(user, restored.id, 'viewer');
-    const sites = new SitesService(db as never, { generateSiteKeyPair: () => ({ publicKey: 'test-public', privateKeyEnc: Buffer.from('test-private') }) } as never, {} as never);
+    const sites = new SitesService(db as never, { generateSiteKeyPair: () => ({ publicKey: 'test-public', privateKeyEnc: Buffer.from('test-private') }) } as never, {} as never, {} as never, {} as never);
     await sites.create(user, { name: 'Audit site', primaryDomain: 'audit.test' });
     expect(await db.auditLog.count({ where: { tenantId, action: 'site.created', actorUserId: adminId } })).toBe(1);
     // Deny audit inserts to prove the account/site mutation rolls back as well.
