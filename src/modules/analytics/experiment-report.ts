@@ -5,22 +5,22 @@ export interface TimelineRow { date: string | Date; variant_id: string; exposure
 export const CONVERSION_WINDOW_MS = 86_400_000;
 export function timelineQuery() {
   return `WITH exposures AS (
-    SELECT session_id, variant_id, min(event_time) AS first_exposure FROM events
+    SELECT session_id, variant_id, min(event_time) AS first_exposure,
+      count() OVER (PARTITION BY session_id) AS arms FROM events
     WHERE tenant_id = {tenantId:UUID} AND site_id = {siteId:UUID}
       AND experiment_id = {experimentId:UUID} AND event_name = 'exposure' AND is_bot = 0 AND session_id != ''
       AND event_time >= {started:DateTime64} AND event_time < {to:DateTime64}
     GROUP BY session_id, variant_id
-  ), assignments AS (SELECT session_id, count() AS arms FROM exposures GROUP BY session_id),
-  conversions AS (
+  ), conversions AS (
     SELECT session_id, event_time AS converted_at FROM events
     WHERE tenant_id = {tenantId:UUID} AND site_id = {siteId:UUID} AND event_name = 'conversion' AND is_bot = 0
       AND event_time >= {from:DateTime64} AND event_time < {to:DateTime64} AND ({goal:String} = '' OR goal = {goal:String})
   ), attributed AS (
     SELECT e.session_id, e.variant_id, e.first_exposure,
       max(CASE WHEN c.converted_at >= e.first_exposure AND c.converted_at < e.first_exposure + INTERVAL 24 HOUR THEN 1 ELSE 0 END) AS converted
-    FROM exposures e INNER JOIN assignments a ON e.session_id = a.session_id AND a.arms = 1
+    FROM exposures e
     LEFT JOIN conversions c ON e.session_id = c.session_id
-    WHERE e.first_exposure >= {from:DateTime64} AND e.first_exposure < {cutoff:DateTime64}
+    WHERE e.arms = 1 AND e.first_exposure >= {from:DateTime64} AND e.first_exposure < {cutoff:DateTime64}
     GROUP BY e.session_id, e.variant_id, e.first_exposure
   ) SELECT CAST(first_exposure AS Date) AS date, variant_id, count() AS exposures, sum(converted) AS conversions
     FROM attributed GROUP BY date, variant_id ORDER BY date, variant_id`;

@@ -19,7 +19,7 @@ it('accumulates genuine daily cohorts, carries rates through empty days and keep
 });
 it('binds authorized identities, excludes ambiguous assignments and pilot sessions, and translates the observation window for PostgreSQL', () => {
   const query = timelineQuery();
-  expect(query).toContain('a.arms = 1');
+  expect(query).toContain('e.arms = 1');
   expect(query).toContain('e.first_exposure >= {from:DateTime64}');
   expect(query).toContain('c.converted_at >= e.first_exposure');
   const translated = postgresQuery(query, { tenantId: 'tenant', siteId: 'site', experimentId: 'experiment', from: '2026-11-01', started: '2026-10-28', to: '2026-11-20', cutoff: '2026-11-19', goal: 'lead' });

@@ -2,6 +2,9 @@
 export function postgresQuery(sql: string, params: Record<string, unknown>) {
   const values: unknown[] = [];
   const translated = sql
+    // Keep session lookups parameterized even when PostgreSQL underestimates exposure counts.
+    .replace(/LEFT JOIN conversions c ON e.session_id = c.session_id/g,
+      'LEFT JOIN LATERAL (SELECT * FROM conversions WHERE session_id = e.session_id OFFSET 0) c ON true')
     .replace(/INTERVAL 24 HOUR/g, "INTERVAL '24 hours'")
     .replace(/count\(\)/g, 'count(*)')
     .replace(/countIf\(([^)]+)\)/g, 'count(*) FILTER (WHERE $1)')

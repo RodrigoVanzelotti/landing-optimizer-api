@@ -22,14 +22,13 @@ export function experimentResultsQuery(experiments: ResultExperiment[], now = ne
     return `SELECT {experiment${index}:UUID} AS experiment_id, {goal${index}:String} AS goal, {end${index}:DateTime64} AS ended_at, {start${index}:DateTime64} AS started_at, {from${index}:DateTime64} AS analysis_from`;
   }).join(' UNION ALL ');
   return { params, sql: `WITH metadata AS (${metadata}), exposures AS (
-    SELECT e.experiment_id, e.session_id, e.variant_id, min(e.event_time) AS first_exposure
+    SELECT e.experiment_id, e.session_id, e.variant_id, min(e.event_time) AS first_exposure,
+      count() OVER (PARTITION BY e.experiment_id, e.session_id) AS arms
     FROM events e INNER JOIN metadata m ON e.experiment_id = m.experiment_id
     WHERE e.tenant_id = {tenantId:UUID} AND e.site_id = {siteId:UUID}
       AND e.event_name = 'exposure' AND e.is_bot = 0 AND e.session_id != ''
       AND e.event_time >= m.started_at AND e.event_time < m.ended_at
     GROUP BY e.experiment_id, e.session_id, e.variant_id
-  ), assignments AS (
-    SELECT experiment_id, session_id, count() AS arms FROM exposures GROUP BY experiment_id, session_id
   ), conversions AS (
     SELECT session_id, goal, event_time AS converted_at FROM events
     WHERE tenant_id = {tenantId:UUID} AND site_id = {siteId:UUID}
@@ -40,9 +39,8 @@ export function experimentResultsQuery(experiments: ResultExperiment[], now = ne
         AND c.converted_at < e.first_exposure + INTERVAL 24 HOUR
         AND (m.goal = '' OR c.goal = m.goal) THEN 1 ELSE 0 END) AS converted
     FROM exposures e INNER JOIN metadata m ON e.experiment_id = m.experiment_id
-    INNER JOIN assignments a ON e.experiment_id = a.experiment_id AND e.session_id = a.session_id AND a.arms = 1
     LEFT JOIN conversions c ON e.session_id = c.session_id
-    WHERE e.first_exposure >= m.analysis_from AND e.first_exposure < m.ended_at - INTERVAL 24 HOUR
+    WHERE e.arms = 1 AND e.first_exposure >= m.analysis_from AND e.first_exposure < m.ended_at - INTERVAL 24 HOUR
     GROUP BY e.experiment_id, e.session_id, e.variant_id
   )
   SELECT experiment_id, variant_id, count() AS exposures, sum(converted) AS conversions

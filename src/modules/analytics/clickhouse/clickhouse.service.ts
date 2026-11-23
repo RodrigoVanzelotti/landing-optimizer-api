@@ -98,7 +98,12 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
   async query<T>(sql: string, params: Record<string, unknown> = {}): Promise<T[]> {
     if (this.postgres) {
       const query = postgresQuery(sql, params);
-      return this.prisma.$queryRawUnsafe<T[]>(query.sql, ...query.values);
+      // Release the connection before the shared pool's 10-second acquisition timeout.
+      const [, rows] = await this.prisma.$transaction([
+        this.prisma.$executeRaw`SET LOCAL statement_timeout = '8s'`,
+        this.prisma.$queryRawUnsafe<T[]>(query.sql, ...query.values),
+      ]);
+      return rows;
     }
     const result = await this.client.query({
       query: sql,

@@ -28,28 +28,26 @@ export function impactQuery(experiments: ImpactExperiment[], range: ReturnType<t
     return `SELECT {experiment${index}:String} AS experiment_id, {start${index}:DateTime64} AS started_at, {end${index}:DateTime64} AS ended_at`;
   }).join(' UNION ALL ');
   return { params, sql: `WITH metadata AS (${metadata}), exposures AS (
-    SELECT session_id, experiment_id, variant_id, min(event_time) AS first_exposure
+    SELECT session_id, experiment_id, variant_id, min(event_time) AS first_exposure,
+      count() OVER (PARTITION BY session_id) AS assignment_count
     FROM events WHERE tenant_id = {tenantId:UUID} AND site_id = {siteId:UUID}
       AND event_time >= {previousFrom:DateTime64} AND event_time < {to:DateTime64}
       AND event_name = 'exposure' AND is_bot = 0 AND session_id != ''
     GROUP BY session_id, experiment_id, variant_id
-  ), assignments AS (
-    SELECT session_id, count() AS assignment_count FROM exposures GROUP BY session_id
   ), conversions AS (
     SELECT session_id, event_time AS converted_at FROM events
     WHERE tenant_id = {tenantId:UUID} AND site_id = {siteId:UUID}
       AND event_time >= {previousFrom:DateTime64} AND event_time < {to:DateTime64}
       AND event_name = 'conversion' AND goal = {goal:String} AND is_bot = 0 AND session_id != ''
   ), attributed AS (
-    SELECT e.session_id, e.experiment_id, e.variant_id, e.first_exposure, a.assignment_count,
+    SELECT e.session_id, e.experiment_id, e.variant_id, e.first_exposure, e.assignment_count,
       min(CASE WHEN c.converted_at >= e.first_exposure AND c.converted_at < m.ended_at
         AND c.converted_at < CASE WHEN e.first_exposure < {from:DateTime64} THEN {from:DateTime64} ELSE {to:DateTime64} END
         THEN c.converted_at ELSE {to:DateTime64} END) AS first_conversion
     FROM exposures e INNER JOIN metadata m ON e.experiment_id = m.experiment_id
-    INNER JOIN assignments a ON e.session_id = a.session_id
     LEFT JOIN conversions c ON e.session_id = c.session_id
     WHERE e.first_exposure >= m.started_at AND e.first_exposure < m.ended_at
-    GROUP BY e.session_id, e.experiment_id, e.variant_id, e.first_exposure, a.assignment_count
+    GROUP BY e.session_id, e.experiment_id, e.variant_id, e.first_exposure, e.assignment_count
   )
   SELECT experiment_id, variant_id, CAST(first_exposure AS DATE) AS exposure_date,
     CASE WHEN first_conversion < {to:DateTime64} THEN CAST(first_conversion AS DATE) ELSE NULL END AS conversion_date,
