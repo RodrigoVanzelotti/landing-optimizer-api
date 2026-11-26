@@ -37,6 +37,7 @@ enum GoalKind {
   event
   url
   form_submit
+  element_visible
 }
 
 enum ExperimentType {

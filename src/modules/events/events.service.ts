@@ -70,8 +70,13 @@ export class EventsService {
     const sessionId = this.siteAuth.pseudoSession(envelope.sid, site.siteId);
     const now = new Date();
     const latestOffset = Math.max(...behavioral.map(e => e.t));
+    const clientBase = envelope.eventBaseAt;
+    const latestClientEvent = clientBase === undefined ? NaN : clientBase + latestOffset;
+    const base = Math.abs(now.getTime() - latestClientEvent) <= 60_000
+      ? Math.min(latestClientEvent, now.getTime()) - latestOffset
+      : now.getTime() - latestOffset;
     const rows: EventRow[] = behavioral.map((e) => ({
-      event_time: fmt(new Date(now.getTime() - latestOffset + e.t)),
+      event_time: fmt(new Date(base + e.t)),
       tenant_id: site.tenantId,
       site_id: site.siteId,
       session_id: sessionId,
@@ -94,22 +99,29 @@ export class EventsService {
     }));
 
     try {
-      if (behavioral.some(e => e.n === 'page_view' || e.n === 'form_submit')) {
+      if (behavioral.some(e => e.n === 'page_view' || e.n === 'form_submit' || e.n === 'element_visible')) {
         const goals = await this.prisma.conversionGoal.findMany({
-          where: { siteId: site.siteId, site: { tenantId: site.tenantId }, kind: { in: ['url', 'form_submit'] } },
+          where: { siteId: site.siteId, site: { tenantId: site.tenantId }, kind: { in: ['url', 'form_submit', 'element_visible'] } },
         });
         const conversions: EventRow[] = [];
-        const pageView = rows.find(row => row.event_name === 'page_view');
+        const seenConfirmations = new Set<string>();
         for (const goal of goals) {
-          const urlMatch = goal.kind === 'url' && pageView !== undefined && matchesGoal(goal, pageView);
-          for (const row of rows) {
-            const matches = goal.kind === 'url' ? urlMatch && row.event_name === 'page_view' : matchesGoal(goal, row);
-            if (matches) conversions.push({ ...row, event_name: 'conversion', goal: goal.name, value: 1 });
+          const urlMatch = goal.kind === 'url' && rows.some(row => matchesGoal(goal, row));
+          for (const [index, row] of rows.entries()) {
+            if (goal.kind === 'url' ? !urlMatch || row.event_name !== 'page_view' : !matchesGoal(goal, row, behavioral[index])) continue;
+            if (goal.kind === 'element_visible') {
+              const key = JSON.stringify([goal.id, behavioral[index]?.t]);
+              if (seenConfirmations.has(key)) continue;
+              seenConfirmations.add(key);
+            }
+            conversions.push({ ...row, event_name: 'conversion', goal: goal.name, value: 1 });
           }
         }
         rows.push(...conversions);
       }
-      await this.ch.insertEvents(rows);
+      // Confirmation signals are used to evaluate configured goals for this site.
+      const stored = rows.filter(row => row.event_name !== 'element_visible');
+      if (stored.length > 0) await this.ch.insertEvents(stored);
     } catch {
       logger.warn('event_batch_dropped', {
         site_id: site.siteId,
@@ -128,8 +140,8 @@ export class EventsService {
    */
   private async persistPageMap(siteId: string, events: WireEvent[]): Promise<void> {
     try {
-      const first = events[0];
-      const payload = first ? parsePageMapPayload(first.p) : null;
+      const latest = events[events.length - 1];
+      const payload = latest ? parsePageMapPayload(latest.p) : null;
       if (!payload) return;
 
       const allowed = await this.redis.allow(

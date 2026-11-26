@@ -1,9 +1,16 @@
 import { runInNewContext } from 'node:vm';
 import type { ConversionGoal } from '@prisma/client';
 import { sanitizePath, sanitizeSelector } from '../events/event-scrub';
+import type { WireEvent } from '../events/event-scrub';
+import type { ElementVisibleMatcher } from './goals.dto';
 import type { EventRow } from '../analytics/clickhouse/clickhouse.service';
 
-export function matchesGoal(goal: Pick<ConversionGoal, 'kind' | 'matcher'>, row: EventRow): boolean {
+export function matchesGoal(goal: Pick<ConversionGoal, 'kind' | 'matcher'>, row: EventRow, source?: WireEvent): boolean {
+  if (goal.kind === 'element_visible') {
+    const { path, selector, formSelector } = goal.matcher as ElementVisibleMatcher;
+    return row.event_name === 'element_visible' && row.page_path === path &&
+      row.selector === selector && source?.p?.formSelector === formSelector;
+  }
   const matcher = goal.matcher as { op?: string; path?: string; selector?: string };
   if (goal.kind === 'form_submit') {
     return row.event_name === 'form_submit' && (!matcher.selector || (

@@ -14,6 +14,7 @@ export const EVENT_NAMES = [
   'rage_click',
   'form_start',
   'form_submit',
+  'element_visible',
   'section_view',
   'hover',
   'dwell',
@@ -45,6 +46,7 @@ export const EnvelopeSchema = z.object({
   ik: z.string().min(1).max(128),
   sid: z.string().min(1).max(128),
   sentAt: z.number().optional(),
+  eventBaseAt: z.number().nonnegative().optional(),
   ctx: z.object({
     path: z.string().max(512),
     ref: z.string().max(255).default(''),

@@ -33,7 +33,7 @@ it('publishes an accepted change to every eligible visitor with one chosen varia
     { id: 'accepted', status: 'accepted', winnerVariantId: 'proposal', allocation: .5, variants: [{ id: 'control', weight: .5, isControl: true, changes: [] }, { id: 'proposal', weight: .5, isControl: false, changes: [] }] },
     { id: 'running', status: 'running', allocation: .5, variants: [{ id: 'control', weight: .5, isControl: true, changes: [] }, { id: 'other', weight: .5, isControl: false, changes: [] }] },
   ]) } };
-  const lockedDb = { ...db, $queryRaw: vi.fn().mockResolvedValue([{ id: 'site' }]) };
+  const lockedDb = { ...db, conversionGoal: { findMany: vi.fn().mockResolvedValue([]) }, $queryRaw: vi.fn().mockResolvedValue([{ id: 'site' }]) };
   const config = new SiteConfigService({ ...lockedDb, $transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(lockedDb) } as never, { get: vi.fn(), set: vi.fn() } as never, { signConfig: () => 'signature' } as never);
   const result = await config.get('site');
   expect(result?.experiments[0]).toMatchObject({ allocation: 1, permanent: true, variants: [{ id: 'proposal', weight: 1, isControl: false }] });

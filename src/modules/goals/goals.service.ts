@@ -36,6 +36,7 @@ export class GoalsService {
     await this.assertNameAvailable(siteId, dto.name);
 
     return this.prisma.$transaction(async tx => {
+      if (dto.kind === 'element_visible') await this.advanceConfig(tx, siteId);
       if (dto.isFavorite) await this.clearFavorite(tx, user.tenantId, siteId);
       const goal = await tx.conversionGoal.create({
         data: {
@@ -100,6 +101,7 @@ export class GoalsService {
     if (Object.keys(data).length === 0) return goal;
 
     return this.prisma.$transaction(async tx => {
+      if (goal.kind === 'element_visible' && dto.matcher !== undefined) await this.advanceConfig(tx, siteId);
       if (dto.isFavorite) await this.clearFavorite(tx, user.tenantId, siteId);
       const updated = await tx.conversionGoal.update({ where: { id: goalId }, data });
       await this.audit.log({
@@ -116,7 +118,7 @@ export class GoalsService {
 
   async remove(user: AuthUser, siteId: string, goalId: string): Promise<void> {
     await this.requireSite(user.tenantId, siteId);
-    await this.requireGoal(siteId, goalId);
+    const goal = await this.requireGoal(siteId, goalId);
 
     const activeReferences = await this.prisma.experiment.count({
       where: { primaryGoalId: goalId, status: { notIn: TERMINAL_STATUSES } },
@@ -128,6 +130,7 @@ export class GoalsService {
     }
 
     await this.prisma.$transaction(async tx => {
+      if (goal.kind === 'element_visible') await this.advanceConfig(tx, siteId);
       await tx.conversionGoal.delete({ where: { id: goalId } });
       await this.audit.log({
         tenantId: user.tenantId,
@@ -141,6 +144,10 @@ export class GoalsService {
   }
 
   /* ------------------------------- helpers -------------------------------- */
+
+  private async advanceConfig(tx: Prisma.TransactionClient, siteId: string): Promise<void> {
+    await tx.site.update({ where: { id: siteId }, data: { configVersion: { increment: 1 } } });
+  }
 
   private async clearFavorite(tx: Prisma.TransactionClient, tenantId: string, siteId: string): Promise<void> {
     await tx.$queryRaw`SELECT id FROM site WHERE id = ${siteId} AND tenant_id = ${tenantId} FOR UPDATE`;

@@ -256,17 +256,16 @@ interface SnippetParams {
 }
 
 function buildSnippet(p: SnippetParams): string {
-  const cfg = JSON.stringify(
-    {
-      siteId: p.siteId,
-      ingestKey: p.ingestKey,
-      publicKey: p.publicKey,
-      sdkUrl: p.sdkUrl,
-      ingestUrl: p.ingestUrl,
-      configUrl: p.configUrl,
-    },
-    null,
-    0,
+  const attrs = {
+    src: p.sdkUrl,
+    'data-site-id': p.siteId,
+    'data-ingest-key': p.ingestKey,
+    'data-public-key': p.publicKey,
+    'data-ingest-url': p.ingestUrl,
+    'data-config-url': p.configUrl,
+  };
+  const encoded = Object.entries(attrs).map(([name, value]) =>
+    name + '="' + value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '"',
   );
-  return `<script>window.__LO_CONFIG=${cfg};(function(w,d){w.LandingOptimizer=w.LandingOptimizer||{q:[],track:function(){this.q.push(["track",[].slice.call(arguments)])},conversion:function(){this.q.push(["conversion",[].slice.call(arguments)])},identifyCompanyContext:function(){this.q.push(["identifyCompanyContext",[].slice.call(arguments)])}};var c=w.__LO_CONFIG,s=d.createElement("script");s.async=true;s.src=c.sdkUrl;s.crossOrigin="anonymous";s.setAttribute("data-site-id",c.siteId);s.setAttribute("data-ingest-key",c.ingestKey);s.setAttribute("data-public-key",c.publicKey);s.setAttribute("data-ingest-url",c.ingestUrl);s.setAttribute("data-config-url",c.configUrl);var f=d.getElementsByTagName("script")[0];f&&f.parentNode?f.parentNode.insertBefore(s,f):(d.head||d.documentElement).appendChild(s)})(window,document);</script>`;
+  return '<script async crossorigin="anonymous" ' + encoded.join(' ') + '></script>';
 }

@@ -60,7 +60,7 @@ describe('goal ingestion', () => {
       { n: 'page_view', t: 2 }, { n: 'form_submit', t: 3, sel: selector },
       { n: 'conversion', t: 4, goal: 'lead_received' },
     ]), 'https://client.example', undefined);
-    expect(findMany).toHaveBeenCalledWith({ where: { siteId, site: { tenantId: siteId }, kind: { in: ['url', 'form_submit'] } } });
+    expect(findMany).toHaveBeenCalledWith({ where: { siteId, site: { tenantId: siteId }, kind: { in: ['url', 'form_submit', 'element_visible'] } } });
     const rows = insertEvents.mock.calls[0]![0] as EventRow[];
     expect(rows).toHaveLength(6);
     expect(rows.filter(e => e.event_name === 'conversion').map(e => e.goal)).toEqual(['lead_received', 'thanks', 'submit']);
@@ -68,6 +68,24 @@ describe('goal ingestion', () => {
     expect(rows[4]!.event_time).toBe(rows[1]!.event_time);
     expect(rows[5]!.selector).toBe(selector);
     expect(rows.every(e => e.page_path === '/thank-you' && e.session_id === 'opaque')).toBe(true);
+  });
+
+  it('deduplicates the same confirmation signal while preserving separate successful attempts', async () => {
+    const confirmation = '[data-lo-id="confirmed"]';
+    const { service, insertEvents } = setup([
+      { id: 'confirmed', name: 'confirmed', kind: 'element_visible', matcher: {
+        path: '/thank-you', selector: confirmation, formSelector: selector,
+      } },
+    ]);
+    const signal = { n: 'element_visible', t: 3, sel: confirmation, p: { formSelector: selector } };
+    await service.ingest(envelope([
+      { n: 'form_submit', t: 1, sel: selector },
+      signal, signal, { ...signal, t: 5 }, { ...signal, t: 8, p: {} },
+    ]), undefined, undefined);
+    const rows = insertEvents.mock.calls[0]![0] as EventRow[];
+    expect(rows.map(row => [row.event_name, row.goal])).toEqual([
+      ['form_submit', ''], ['conversion', 'confirmed'], ['conversion', 'confirmed'],
+    ]);
   });
 
   it('keeps explicit conversion events without synthesizing duplicates', async () => {
@@ -83,4 +101,15 @@ describe('goal ingestion', () => {
     await expect(service.ingest(envelope([{ n: 'page_view', t: 0 }]), undefined, undefined)).rejects.toThrow('Event storage unavailable');
     expect(insertEvents).not.toHaveBeenCalled();
   });
+});
+
+it('matches a confirmation only on its configured route, element and form', () => {
+  const selector = '[data-lo-id="signup-confirmed"]';
+  const formSelector = '[data-lo-id="signup-form"]';
+  const goal = { kind: 'element_visible' as const, matcher: { path: '/signup', selector, formSelector } };
+  const signal = { n: 'element_visible' as const, t: 1, p: { formSelector } };
+  expect(matchesGoal(goal, row('element_visible', '/signup', selector), signal)).toBe(true);
+  expect(matchesGoal(goal, row('element_visible', '/other', selector), signal)).toBe(false);
+  expect(matchesGoal(goal, row('form_submit', '/signup', selector), signal)).toBe(false);
+  expect(matchesGoal(goal, row('element_visible', '/signup', selector), { ...signal, p: {} })).toBe(false);
 });

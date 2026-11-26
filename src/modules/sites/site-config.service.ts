@@ -4,6 +4,7 @@ import { RedisService } from '../../common/redis/redis.module';
 import { CryptoService } from '../../common/crypto/crypto.service';
 import { writeAudit } from '../../common/audit/audit.module';
 import type { Prisma } from '@prisma/client';
+import type { ElementVisibleMatcher } from '../goals/goals.dto';
 
 /** Wire shape served to the snippet — mirrors snippet/src/types.ts SiteConfig. */
 export interface WireChange {
@@ -30,6 +31,7 @@ export interface SignedSiteConfig {
   version: number;
   sampling: number;
   experiments: WireExperiment[];
+  confirmationRules?: ElementVisibleMatcher[];
   sig: string;
 }
 
@@ -91,11 +93,22 @@ export class SiteConfigService {
       })),
     }));
 
+    const goals = await db.conversionGoal.findMany({
+      where: { siteId, kind: 'element_visible' },
+      select: { matcher: true },
+      orderBy: { id: 'asc' },
+    });
+    const confirmationRules = Array.from(new Map(goals.map(goal => {
+      const { path, selector, formSelector } = goal.matcher as ElementVisibleMatcher;
+      return [JSON.stringify([path, selector, formSelector]), { path, selector, ...(formSelector ? { formSelector } : {}) }];
+    })).values());
+
     const unsigned = {
       siteId: site.id,
       version,
       sampling: Number(site.samplingRate),
       experiments: wireExperiments,
+      ...(confirmationRules.length ? { confirmationRules } : {}),
     };
     const sig = this.crypto.signConfig(site.privateKeyEnc, unsigned);
     return { ...unsigned, sig };

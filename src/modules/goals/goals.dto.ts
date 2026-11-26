@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { sanitizeSelector } from '../events/event-scrub';
+import { sanitizePath, sanitizeSelector } from '../events/event-scrub';
 
 /**
  * Conversion goal matchers, keyed by goal kind. The matcher shape is validated
@@ -40,10 +40,24 @@ const FormSubmitMatcherSchema = z
   .strict()
   .default({});
 
+const ConfirmationSelectorSchema = z.string().trim()
+  .regex(/^\[data-lo-id="[a-z][a-z0-9-]{0,63}"\]$/)
+  .refine(value => sanitizeSelector(value) === value, 'expected a safe data-lo-id selector');
+
+const ElementVisibleMatcherSchema = z.object({
+  path: z.string().trim().max(512).regex(/^\/(?!\/)[^?#\s]*$/)
+    .refine(value => sanitizePath(value) === value, 'expected an exact safe pathname'),
+  selector: ConfirmationSelectorSchema,
+  formSelector: ConfirmationSelectorSchema.optional(),
+}).strict();
+
+export type ElementVisibleMatcher = z.infer<typeof ElementVisibleMatcherSchema>;
+
 const MATCHER_SCHEMAS = {
   event: EventMatcherSchema,
   url: UrlMatcherSchema,
   form_submit: FormSubmitMatcherSchema,
+  element_visible: ElementVisibleMatcherSchema,
 } as const;
 
 export type GoalKind = keyof typeof MATCHER_SCHEMAS;
@@ -71,7 +85,7 @@ const GoalNameSchema = z
 export const CreateGoalSchema = z
   .object({
     name: GoalNameSchema,
-    kind: z.enum(['event', 'url', 'form_submit']).default('event'),
+    kind: z.enum(['event', 'url', 'form_submit', 'element_visible']).default('event'),
     matcher: z.unknown().optional(),
     isFavorite: z.boolean().optional(),
   })
