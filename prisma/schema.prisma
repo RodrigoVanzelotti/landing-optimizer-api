@@ -226,6 +226,7 @@ model Site {
   origins         SiteOrigin[]
   favoritedBy     UserMembership[] @relation("FavoriteSite")
   goals           ConversionGoal[]
+  receipts        ConversionReceipt[]
   experiments     Experiment[]
   guardrail       BrandGuardrail?
   pageMaps        PageMap[]
@@ -263,6 +264,16 @@ model ConversionGoal {
 
   @@unique([siteId, name])
   @@map("conversion_goal")
+}
+
+model ConversionReceipt {
+  siteId      String @map("site_id")
+  goal        String
+  fingerprint String
+  site        Site   @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@id([siteId, goal, fingerprint])
+  @@map("conversion_receipt")
 }
 
 /// ---------------------------------------------------------------------------

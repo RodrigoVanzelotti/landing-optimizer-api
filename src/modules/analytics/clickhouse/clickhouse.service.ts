@@ -53,6 +53,33 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
     return this.postgres ? null : 180;
   }
 
+  get supportsConversionReceipts(): boolean {
+    return this.postgres;
+  }
+
+  async insertConfirmedConversion(row: EventRow, fingerprint?: string): Promise<boolean> {
+    if (!this.postgres) throw new Error('Transactional conversion receipts require PostgreSQL');
+    return this.prisma.$transaction(async tx => {
+      const eligible = await tx.$queryRaw<{ id: string }[]>`
+        SELECT s.id FROM site s JOIN tenant t ON t.id = s.tenant_id
+        JOIN conversion_goal g ON g.site_id = s.id
+        WHERE s.id = ${row.site_id} AND s.tenant_id = ${row.tenant_id} AND s.status = 'active'
+          AND t.archived_at IS NULL AND g.kind = 'event' AND g.name = ${row.goal}
+        FOR SHARE OF s, t, g`;
+      if (!eligible.length) return false;
+      if (fingerprint) {
+        const claimed = await tx.$executeRaw`
+          INSERT INTO conversion_receipt (site_id, goal, fingerprint)
+          VALUES (${row.site_id}, ${row.goal}, ${fingerprint})
+          ON CONFLICT DO NOTHING`;
+        if (!claimed) return false;
+      }
+      await tx.$executeRaw`
+        INSERT INTO events SELECT * FROM jsonb_populate_recordset(NULL::events, ${JSON.stringify([row])}::jsonb)`;
+      return true;
+    });
+  }
+
   onModuleInit(): void {
     if (this.postgres) return;
     this.client = createClient({

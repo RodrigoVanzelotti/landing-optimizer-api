@@ -4,6 +4,7 @@ import { sanitizePath, sanitizeSelector } from '../events/event-scrub';
 import type { WireEvent } from '../events/event-scrub';
 import type { ElementVisibleMatcher } from './goals.dto';
 import type { EventRow } from '../analytics/clickhouse/clickhouse.service';
+import { isJourneyRoute, matchesPath } from '../analytics/journey';
 
 export function matchesGoal(goal: Pick<ConversionGoal, 'kind' | 'matcher'>, row: EventRow, source?: WireEvent): boolean {
   if (goal.kind === 'element_visible') {
@@ -11,13 +12,16 @@ export function matchesGoal(goal: Pick<ConversionGoal, 'kind' | 'matcher'>, row:
     return row.event_name === 'element_visible' && row.page_path === path &&
       row.selector === selector && source?.p?.formSelector === formSelector;
   }
-  const matcher = goal.matcher as { op?: string; path?: string; selector?: string };
+  const matcher = goal.matcher as { op?: string; path?: string; selector?: string; fromPath?: string };
   if (goal.kind === 'form_submit') {
     return row.event_name === 'form_submit' && (!matcher.selector || (
       sanitizeSelector(matcher.selector) !== '' && row.selector === matcher.selector
     ));
   }
   if (goal.kind !== 'url' || row.event_name !== 'page_view' || !matcher.path) return false;
+  const previous = source?.p?.previousPath;
+  if (matcher.fromPath && (typeof previous !== 'string' || !isJourneyRoute(previous) ||
+      previous.endsWith('/*') || previous === row.page_path || !matchesPath(matcher.fromPath, previous))) return false;
   const path = sanitizePath(row.page_path);
   switch (matcher.op ?? 'exact') {
     case 'exact': return path === matcher.path;

@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Query } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service';
 import { ExperimentReportService } from './experiment-report.service';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
@@ -6,6 +6,8 @@ import type { AuthUser } from '../../common/auth/auth.types';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { AnalyticsRangeQuerySchema, SiteQuerySchema, ReportQuerySchema, type AnalyticsRangeQuery, type ReportQuery } from './report';
 import { ExperimentImpactQuerySchema, type ExperimentImpactQuery } from './experiment-impact';
+import { Roles } from '../../common/auth/roles.decorator';
+import { JourneySchema, type Journey } from './journey';
 
 @Controller('analytics')
 export class AnalyticsController {
@@ -37,6 +39,18 @@ export class AnalyticsController {
   @Get('funnel')
   funnel(@CurrentUser() user: AuthUser, @Query(new ZodValidationPipe(SiteQuerySchema)) query: { siteId: string }) {
     return this.analytics.funnel(user.tenantId, query.siteId);
+  }
+
+  @Get('journey')
+  journey(@CurrentUser() user: AuthUser, @Query(new ZodValidationPipe(ReportQuerySchema)) query: ReportQuery) {
+    return this.analytics.journey(user.tenantId, query);
+  }
+
+  @Patch('journey/:siteId')
+  @Roles('editor')
+  saveJourney(@CurrentUser() user: AuthUser, @Param('siteId') siteId: string,
+    @Body(new ZodValidationPipe(JourneySchema)) journey: Journey) {
+    return this.analytics.saveJourney(user, siteId, journey);
   }
 
   @Get('sections')

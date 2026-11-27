@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { sanitizePath, sanitizeSelector } from '../events/event-scrub';
+import { isJourneyRoute } from '../analytics/journey';
 
 /**
  * Conversion goal matchers, keyed by goal kind. The matcher shape is validated
@@ -15,6 +16,7 @@ const UrlMatcherSchema = z
   .object({
     op: z.enum(['exact', 'prefix', 'contains', 'regex']).default('exact'),
     path: z.string().min(1).max(1024),
+    fromPath: z.string().trim().max(256).refine(isJourneyRoute, 'Informe um caminho como /cadastro ou /produto/*').optional(),
   })
   .strict()
   .superRefine((m, ctx) => {

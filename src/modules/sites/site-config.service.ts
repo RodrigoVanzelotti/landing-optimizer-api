@@ -5,6 +5,7 @@ import { CryptoService } from '../../common/crypto/crypto.service';
 import { writeAudit } from '../../common/audit/audit.module';
 import type { Prisma } from '@prisma/client';
 import type { ElementVisibleMatcher } from '../goals/goals.dto';
+import { readJourney, type Journey } from '../analytics/journey';
 
 /** Wire shape served to the snippet — mirrors snippet/src/types.ts SiteConfig. */
 export interface WireChange {
@@ -32,6 +33,7 @@ export interface SignedSiteConfig {
   sampling: number;
   experiments: WireExperiment[];
   confirmationRules?: ElementVisibleMatcher[];
+  journey?: Journey;
   sig: string;
 }
 
@@ -103,12 +105,17 @@ export class SiteConfigService {
       return [JSON.stringify([path, selector, formSelector]), { path, selector, ...(formSelector ? { formSelector } : {}) }];
     })).values());
 
+    const journey = readJourney(site.settings);
+    if (journey.globalEvent && !await db.conversionGoal.findFirst({
+      where: { siteId, kind: 'event', name: journey.globalEvent.goal }, select: { id: true },
+    })) delete journey.globalEvent;
     const unsigned = {
       siteId: site.id,
       version,
       sampling: Number(site.samplingRate),
       experiments: wireExperiments,
       ...(confirmationRules.length ? { confirmationRules } : {}),
+      ...(journey.steps.length || journey.globalEvent ? { journey } : {}),
     };
     const sig = this.crypto.signConfig(site.privateKeyEnc, unsigned);
     return { ...unsigned, sig };

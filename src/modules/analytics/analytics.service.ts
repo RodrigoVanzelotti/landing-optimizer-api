@@ -1,4 +1,7 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
+import type { AuthUser } from '../../common/auth/auth.types';
+import { writeAudit } from '../../common/audit/audit.module';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ClickHouseService } from './clickhouse/clickhouse.service';
 import { buildReport, reportRange, SESSION_REPORT_SQL, type DailyMetric, type ReportQuery } from './report';
@@ -6,6 +9,7 @@ import { impactQuery, buildExperimentImpact, type ImpactRow, type ExperimentImpa
 import { buildExperimentResults, experimentResultsQuery, type ResultRow } from './experiment-results';
 import { storedReport } from './experiment-report';
 import { evaluateEvidence, type EvaluationPlan } from '../experiments/experiment-evidence';
+import { buildJourney, JOURNEY_ROW_LIMIT, JOURNEY_WINDOW_MS, readJourney, type Journey, type JourneyRow } from './journey';
 
 export interface OverviewResult {
   pageViews: number;
@@ -143,6 +147,55 @@ export class AnalyticsService {
       { tenantId, siteId },
     );
     return rows.map((r) => ({ event: r.event_name, count: Number(r.c) }));
+  }
+
+  async journey(tenantId: string, query: ReportQuery) {
+    const site = await this.requireSite(tenantId, query.siteId);
+    const journey = readJourney(site.settings);
+    const now = new Date();
+    const range = reportRange(query.timeframe, now);
+    const end = Math.min(Date.parse(range.to), now.getTime() - JOURNEY_WINDOW_MS);
+    if (journey.steps.length === 0) return { journey, steps: [], truncated: false };
+    const rows = await this.ch.query<JourneyRow>(
+      `SELECT session_id, event_time, event_name, page_path, selector, goal, props
+       FROM events WHERE tenant_id = {tenantId:UUID} AND site_id = {siteId:UUID}
+         AND session_id != '' AND is_bot = 0
+         AND event_name IN ('page_view', 'navigation_click', 'conversion')
+         AND event_time >= {from:DateTime64} AND event_time < {to:DateTime64}
+       ORDER BY session_id, event_time, event_name DESC
+       LIMIT ${JOURNEY_ROW_LIMIT + 1}`,
+      { tenantId, siteId: query.siteId, from: range.from.replace('T', ' ').replace('Z', ''),
+        to: new Date(end + JOURNEY_WINDOW_MS).toISOString().replace('T', ' ').replace('Z', '') },
+    );
+    const truncated = rows.length > JOURNEY_ROW_LIMIT;
+    return { journey, steps: truncated ? [] : buildJourney(journey, rows, end), truncated };
+  }
+
+  async saveJourney(user: AuthUser, siteId: string, journey: Journey) {
+    if (journey.globalEvent && !this.ch.supportsConversionReceipts) {
+      throw new BadRequestException('O conector global requer armazenamento PostgreSQL.');
+    }
+    return this.prisma.$transaction(async tx => {
+      const [site] = await tx.$queryRaw<{ settings: Prisma.JsonValue }[]>`SELECT settings FROM site WHERE id = ${siteId} AND tenant_id = ${user.tenantId} FOR UPDATE`;
+      if (!site) throw new NotFoundException('Site not found');
+      const eventNames = journey.steps.filter(step => step.startsWith('event:')).map(step => step.slice(6));
+      if (eventNames.length) {
+        const count = await tx.conversionGoal.count({ where: { siteId, name: { in: eventNames } } });
+        if (count !== eventNames.length) throw new BadRequestException('Cadastre a meta usada como última etapa neste site.');
+      }
+      if (journey.globalEvent && !await tx.conversionGoal.findFirst({
+        where: { siteId, kind: 'event', name: journey.globalEvent.goal }, select: { id: true },
+      })) {
+        throw new BadRequestException('Cadastre a meta do evento global como Evento personalizado.');
+      }
+      const current = site.settings && typeof site.settings === 'object' && !Array.isArray(site.settings) ? site.settings : {};
+      await tx.site.update({ where: { id: siteId }, data: {
+        settings: { ...current, journey }, configVersion: { increment: 1 },
+      } });
+      await writeAudit(tx, { tenantId: user.tenantId, actorUserId: user.userId, action: 'site.updated', targetType: 'site',
+        targetId: siteId, metadata: { fields: ['journey'] } });
+      return journey;
+    });
   }
 
   async sections(

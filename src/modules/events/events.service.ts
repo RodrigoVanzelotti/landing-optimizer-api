@@ -1,10 +1,12 @@
-import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { z } from 'zod';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisService } from '../../common/redis/redis.module';
 import { newId } from '../../common/crypto/ids';
 import { ClickHouseService, type EventRow } from '../analytics/clickhouse/clickhouse.service';
 import {
   parsePageMapPayload,
+  looksLikePii,
   sanitizePath,
   sanitizeSelector,
   scrubProps,
@@ -14,6 +16,7 @@ import {
 import { SiteAuthService } from './site-auth.service';
 import { Logger } from '../../common/logging/logger';
 import { matchesGoal } from '../goals/goal-matcher';
+import { journeyGoal, readJourney } from '../analytics/journey';
 
 const logger = Logger('EventsService');
 
@@ -22,6 +25,13 @@ const RATE_LIMIT = 600; // events batches per window
 const RATE_WINDOW = 60;
 const PAGE_MAP_WRITE_LIMIT = 30; // Postgres page-map upserts per site per hour
 const PAGE_MAP_WINDOW = 3600;
+const transactionId = z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/);
+export const ServerConversionSchema = z.object({
+  goal: z.string().regex(journeyGoal),
+  transactionId,
+  sessionId: z.string().regex(/^s_[a-f0-9]{32}$/).optional(),
+}).strict();
+export type ServerConversion = z.infer<typeof ServerConversionSchema>;
 
 /**
  * Development/edge-fallback ingestion. Validates the ingest key + origin, rate
@@ -95,7 +105,7 @@ export class EventsService {
       scroll_depth: e.sd ?? 0,
       dwell_ms: e.dw ?? 0,
       value: e.val ?? 0,
-      props: scrubProps(e.p),
+      props: e.n === 'navigation_click' ? navigationProps(e.p) : scrubProps(e.p),
     }));
 
     try {
@@ -106,9 +116,10 @@ export class EventsService {
         const conversions: EventRow[] = [];
         const seenConfirmations = new Set<string>();
         for (const goal of goals) {
-          const urlMatch = goal.kind === 'url' && rows.some(row => matchesGoal(goal, row));
+          const sharedUrl = goal.kind === 'url' && !(goal.matcher as { fromPath?: string }).fromPath;
+          const urlMatch = sharedUrl && rows.some(row => matchesGoal(goal, row));
           for (const [index, row] of rows.entries()) {
-            if (goal.kind === 'url' ? !urlMatch || row.event_name !== 'page_view' : !matchesGoal(goal, row, behavioral[index])) continue;
+            if (sharedUrl ? !urlMatch || row.event_name !== 'page_view' : !matchesGoal(goal, row, behavioral[index])) continue;
             if (goal.kind === 'element_visible') {
               const key = JSON.stringify([goal.id, behavioral[index]?.t]);
               if (seenConfirmations.has(key)) continue;
@@ -120,8 +131,22 @@ export class EventsService {
         rows.push(...conversions);
       }
       // Confirmation signals are used to evaluate configured goals for this site.
-      const stored = rows.filter(row => row.event_name !== 'element_visible');
+      const stored = rows.filter(row => row.event_name !== 'element_visible' && row.event_name !== 'global_conversion');
       if (stored.length > 0) await this.ch.insertEvents(stored);
+      if (this.ch.supportsConversionReceipts && behavioral.some(event => event.n === 'global_conversion')) {
+        const current = await this.prisma.site.findUnique({ where: { id: site.siteId }, select: { settings: true } });
+        const rule = readJourney(current?.settings).globalEvent;
+        if (rule) {
+          for (const [index, event] of behavioral.entries()) {
+            if (event.n !== 'global_conversion' || event.goal !== rule.goal) continue;
+            const transaction = transactionId.safeParse(event.p?.transactionId).data;
+            if (!transaction && rule.source === 'purchase') continue;
+            await this.ch.insertConfirmedConversion({
+              ...rows[index]!, event_name: 'conversion', value: 1, props: '',
+            }, transaction ? this.siteAuth.hash(transaction) : undefined);
+          }
+        }
+      }
     } catch {
       logger.warn('event_batch_dropped', {
         site_id: site.siteId,
@@ -131,6 +156,49 @@ export class EventsService {
       throw new ServiceUnavailableException('Event storage unavailable');
     }
     return 'ok';
+  }
+
+  async getServerToken(tenantId: string, siteId: string): Promise<{ token: string }> {
+    const site = await this.prisma.site.findFirst({ where: { id: siteId, tenantId }, select: { id: true } });
+    if (!site) throw new ForbiddenException();
+    if (!this.ch.supportsConversionReceipts) throw new BadRequestException('O conector de servidor requer PostgreSQL.');
+    return { token: this.siteAuth.serverToken(siteId) };
+  }
+
+  async serverConversion(siteId: string, authorization: string, conversion: ServerConversion) {
+    if (!authorization.startsWith('Bearer ') || !this.siteAuth.validServerToken(siteId, authorization.slice(7))) {
+      throw new ForbiddenException();
+    }
+    if (!this.ch.supportsConversionReceipts) throw new BadRequestException('O conector de servidor requer PostgreSQL.');
+    const site = await this.prisma.site.findFirst({
+      where: { id: siteId, status: 'active', tenant: { archivedAt: null } }, select: { tenantId: true },
+    });
+    if (!site) throw new ForbiddenException();
+    const goal = await this.prisma.conversionGoal.findFirst({
+      where: { siteId, name: conversion.goal, kind: 'event' }, select: { id: true },
+    });
+    if (!goal) throw new BadRequestException('Cadastre a meta como Evento personalizado.');
+    const now = new Date();
+    const from = new Date(now.getTime() - 86_400_000);
+    let session = '';
+    if (conversion.sessionId) {
+      const current = this.siteAuth.pseudoSession(conversion.sessionId, siteId, now);
+      const previous = this.siteAuth.pseudoSession(conversion.sessionId, siteId, from);
+      const [observed] = await this.prisma.$queryRaw<{ session_id: string }[]>`
+        SELECT session_id FROM events WHERE tenant_id = ${site.tenantId} AND site_id = ${siteId}
+        AND session_id IN (${current}, ${previous})
+        AND event_time BETWEEN ${fmt(from)}::timestamp AND ${fmt(now)}::timestamp
+        AND event_name IN ('page_view', 'exposure')
+        ORDER BY event_time DESC LIMIT 1`;
+      session = observed?.session_id ?? '';
+    }
+    const recorded = await this.ch.insertConfirmedConversion({
+      event_time: fmt(now), tenant_id: site.tenantId, site_id: siteId, session_id: session,
+      event_name: 'conversion', page_path: '', referrer_host: '', device_category: '',
+      browser_category: '', country: '', is_bot: 0, experiment_id: NIL, variant_id: NIL,
+      section_id: '', selector: '', goal: conversion.goal, scroll_depth: 0, dwell_ms: 0, value: 1, props: '',
+    }, this.siteAuth.hash(conversion.transactionId));
+    return { recorded, attributed: recorded && Boolean(session) };
   }
 
   /**
@@ -172,6 +240,17 @@ export class EventsService {
       });
     }
   }
+}
+
+function navigationProps(props: WireEvent['p']): string {
+  const { destination, group } = props ?? {};
+  if (typeof destination !== 'string' || destination.length > 256 ||
+      !/^\/(?!\/)[^?#\\\s]*$/.test(destination)) return '';
+  try { if (looksLikePii(decodeURIComponent(destination))) return ''; } catch { return ''; }
+  return JSON.stringify({
+    destination,
+    ...(typeof group === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(group) && !looksLikePii(group) ? { group } : {}),
+  });
 }
 
 /** Convert a Date to a ClickHouse DateTime64(3) literal. */

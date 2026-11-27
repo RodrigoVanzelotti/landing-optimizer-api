@@ -10,6 +10,7 @@ export const EVENT_NAMES = [
   'page_view',
   'scroll_depth',
   'cta_click',
+  'navigation_click',
   'dead_click',
   'rage_click',
   'form_start',
@@ -21,6 +22,7 @@ export const EVENT_NAMES = [
   'dropoff',
   'exposure',
   'conversion',
+  'global_conversion',
   'page_map',
   'company_context',
 ] as const;

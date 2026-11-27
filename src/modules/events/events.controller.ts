@@ -10,7 +10,7 @@ import {
   Res,
 } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { EventsService } from './events.service';
+import { EventsService, ServerConversionSchema, type ServerConversion } from './events.service';
 import { EnvelopeSchema } from './event-scrub';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { Public } from '../../common/auth/public.decorator';
@@ -18,6 +18,9 @@ import { SiteConfigService } from '../sites/site-config.service';
 import type { Envelope } from './event-scrub';
 import { requestIdOf, type RequestContext } from '../../common/logging/request-context';
 import { Logger } from '../../common/logging/logger';
+import { CurrentUser } from '../../common/auth/current-user.decorator';
+import { Roles } from '../../common/auth/roles.decorator';
+import type { AuthUser } from '../../common/auth/auth.types';
 
 const logger = Logger('EventsController');
 
@@ -60,6 +63,21 @@ export class EventsController {
       void res.status(429);
     }
     // 'ok' keeps the 202 default.
+  }
+
+  @Get('sites/:siteId/server-conversion-token')
+  @Roles('admin')
+  @Header('Cache-Control', 'no-store')
+  serverToken(@CurrentUser() user: AuthUser, @Param('siteId') siteId: string) {
+    return this.events.getServerToken(user.tenantId, siteId);
+  }
+
+  @Public()
+  @Post('server-conversions/:siteId')
+  @HttpCode(200)
+  serverConversion(@Param('siteId') siteId: string, @Req() req: FastifyRequest,
+    @Body(new ZodValidationPipe(ServerConversionSchema)) conversion: ServerConversion) {
+    return this.events.serverConversion(siteId, headerOf(req, 'authorization') ?? '', conversion);
   }
 
   @Public()
