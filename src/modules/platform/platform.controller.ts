@@ -5,6 +5,7 @@ import { CurrentUser } from '../../common/auth/current-user.decorator';
 import type { AuthUser } from '../../common/auth/auth.types';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { PasswordResetService } from '../auth/password-reset.service';
+import { AuthService } from '../auth/auth.service';
 import { ArchiveTenantSchema, CreateTenantSchema, type CreateTenantDto } from './platform.dto';
 import { PlatformService } from './platform.service';
 
@@ -12,13 +13,17 @@ import { PlatformService } from './platform.service';
 @Roles('viewer')
 @UseGuards(PlatformOwnerGuard)
 export class PlatformController {
-  constructor(private readonly platform: PlatformService, private readonly passwords: PasswordResetService) {}
+  constructor(private readonly platform: PlatformService, private readonly passwords: PasswordResetService, private readonly auth: AuthService) {}
 
   @Get()
   list() { return this.platform.list(); }
 
   @Get(':id')
   get(@Param('id') id: string) { return this.platform.get(id); }
+
+  @Post(':id/dashboard-access')
+  @HttpCode(200)
+  dashboardAccess(@CurrentUser() user: AuthUser, @Param('id') id: string) { return this.auth.openCustomerDashboard(user, id); }
 
   @Post()
   create(@CurrentUser() user: AuthUser, @Body(new ZodValidationPipe(CreateTenantSchema)) dto: CreateTenantDto) { return this.platform.create(dto, user.userId); }

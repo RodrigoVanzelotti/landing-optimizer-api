@@ -1,5 +1,6 @@
 import {
   Injectable,
+  ForbiddenException,
   UnauthorizedException,
   NotFoundException,
 } from '@nestjs/common';
@@ -9,7 +10,7 @@ import * as argon2 from 'argon2';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { TeamService } from '../team/team.service';
 import type { AppEnv } from '../../config/env';
-import type { AuthUser, JwtPayload } from '../../common/auth/auth.types';
+import type { AuthUser, CustomerScope, JwtPayload } from '../../common/auth/auth.types';
 import { isPlatformOwner } from '../../common/auth/platform-owner.guard';
 import { writeAudit } from '../../common/audit/audit.module';
 
@@ -112,10 +113,28 @@ export class AuthService {
         name: true,
       },
     });
-    return { ...account, tenantId: user.tenantId, role: user.role === 'owner' ? 'admin' : user.role, platformOwner: isPlatformOwner(user.email) };
+    return {
+      ...account, tenantId: user.tenantId, role: user.role === 'owner' ? 'admin' : user.role,
+      platformOwner: user.customerName === undefined && isPlatformOwner(user.email),
+      customerName: user.customerName,
+    };
+  }
+
+  async openCustomerDashboard(user: AuthUser, tenantId: string): Promise<{ scope: string }> {
+    if (user.customerName !== undefined || !isPlatformOwner(user.email)) throw new ForbiddenException('Invalid customer access');
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId, archivedAt: null },
+      select: { id: true },
+    });
+    if (!tenant) throw new NotFoundException('Cliente ativo não encontrado.');
+    const grant: CustomerScope = { typ: 'customer-scope', sub: user.userId, tid: tenant.id, home: user.tenantId, sv: user.sessionVersion ?? 0 };
+    const scope = await this.jwt.signAsync(grant, { expiresIn: '1h' });
+    await writeAudit(this.prisma, { tenantId: user.tenantId, actorUserId: user.userId, action: 'platform.customer_dashboard_opened', targetType: 'tenant', targetId: tenant.id });
+    return { scope };
   }
 
   async preferences(user: AuthUser): Promise<{ favoriteSiteId: string | null }> {
+    if (user.customerName !== undefined) return { favoriteSiteId: null };
     const [preferences] = await this.prisma.$queryRaw<{ favoriteSiteId: string | null }[]>`
       SELECT s.id AS "favoriteSiteId" FROM user_membership m
       LEFT JOIN site s ON s.id = m.favorite_site_id AND s.tenant_id = m.tenant_id
@@ -125,6 +144,7 @@ export class AuthService {
   }
 
   async updatePreferences(user: AuthUser, favoriteSiteId: string | null): Promise<{ favoriteSiteId: string | null }> {
+    if (user.customerName !== undefined) throw new ForbiddenException('Site preferences require workspace membership');
     return this.prisma.$transaction(async tx => {
       const [preferences] = await tx.$queryRaw<{ favoriteSiteId: string | null }[]>`
         UPDATE user_membership SET favorite_site_id = ${favoriteSiteId}

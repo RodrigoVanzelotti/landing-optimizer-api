@@ -7,6 +7,15 @@ export interface AuthUser {
   role: Role;
   email: string;
   sessionVersion?: number;
+  customerName?: string;
+}
+
+export interface CustomerScope {
+  typ: 'customer-scope';
+  sub: string;
+  tid: string;
+  home: string;
+  sv: number;
 }
 
 export interface JwtPayload {

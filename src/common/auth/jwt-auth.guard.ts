@@ -1,6 +1,7 @@
 import {
   CanActivate,
   ExecutionContext,
+  ForbiddenException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -8,8 +9,9 @@ import { JwtService } from '@nestjs/jwt';
 import { Reflector } from '@nestjs/core';
 import type { FastifyRequest } from 'fastify';
 import { IS_PUBLIC_KEY } from './public.decorator';
-import type { AuthUser, JwtPayload } from './auth.types';
+import type { AuthUser, CustomerScope, JwtPayload } from './auth.types';
 import { PrismaService } from '../prisma/prisma.service';
+import { isPlatformOwner } from './platform-owner.guard';
 
 /**
  * Verifies the short-lived access JWT and attaches the tenant-scoped principal
@@ -54,6 +56,23 @@ export class JwtAuthGuard implements CanActivate {
       email: membership.user.email,
       sessionVersion: membership.user.sessionVersion,
     };
+    const scope = req.headers['x-customer-scope'];
+    if (scope !== undefined) {
+      if (typeof scope !== 'string' || !isPlatformOwner(user.email)) throw new ForbiddenException('Invalid customer access');
+      const grant = await this.jwt.verifyAsync<CustomerScope>(scope).catch(() => null);
+      if (grant?.typ !== 'customer-scope' || grant.sub !== user.userId || grant.home !== user.tenantId ||
+          grant.sv !== user.sessionVersion || typeof grant.tid !== 'string') {
+        throw new ForbiddenException('Invalid or expired customer access');
+      }
+      const tenant = await this.prisma.tenant.findUnique({
+        where: { id: grant.tid, archivedAt: null },
+        select: { name: true },
+      });
+      if (!tenant) throw new ForbiddenException('Customer workspace unavailable');
+      user.tenantId = grant.tid;
+      user.role = 'admin';
+      user.customerName = tenant.name;
+    }
     (req as FastifyRequest & { user?: AuthUser }).user = user;
     return true;
   }

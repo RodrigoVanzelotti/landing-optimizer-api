@@ -4,7 +4,7 @@ import type { ExecutionContext } from '@nestjs/common';
 import { GUARDS_METADATA } from '@nestjs/common/constants';
 import { Reflector } from '@nestjs/core';
 import type { ConfigService } from '@nestjs/config';
-import type { JwtService } from '@nestjs/jwt';
+import { JwtService } from '@nestjs/jwt';
 import type { PrismaService } from '../src/common/prisma/prisma.service';
 import type { AppEnv } from '../src/config/env';
 import type { AuthUser } from '../src/common/auth/auth.types';
@@ -12,13 +12,14 @@ import { PlatformOwnerGuard } from '../src/common/auth/platform-owner.guard';
 import { JwtAuthGuard } from '../src/common/auth/jwt-auth.guard';
 import { PlatformController } from '../src/modules/platform/platform.controller';
 import { PlatformService } from '../src/modules/platform/platform.service';
+import { AuthService } from '../src/modules/auth/auth.service';
 import { CreateTenantSchema } from '../src/modules/platform/platform.dto';
 import { provisionTenant } from '../src/modules/team/provision-tenant';
 
 vi.mock('../src/modules/team/provision-tenant', () => ({ provisionTenant: vi.fn().mockResolvedValue({ tenantId: 'new-tenant', invitationUrl: 'https://dashboard.example.com/invite#secret' }) }));
 const owner: AuthUser = { userId: 'owner', tenantId: 'operator-tenant', email: 'rodrigovanzelotti@gmail.com', role: 'admin' };
-function context(email?: string) {
-  const request = { user: email ? { ...owner, email } : undefined, headers: { authorization: 'Bearer signed-token' } };
+function context(email?: string, headers: Record<string, string> = { authorization: 'Bearer signed-token' }) {
+  const request = { user: email ? { ...owner, email } : undefined, headers };
   const ctx = { switchToHttp: () => ({ getRequest: () => request }), getHandler: () => PlatformController.prototype.list, getClass: () => PlatformController } as unknown as ExecutionContext;
   return { ctx, request };
 }
@@ -40,6 +41,42 @@ describe('exclusive platform access', () => {
     await new JwtAuthGuard(jwt as unknown as JwtService, new Reflector(), prisma as unknown as PrismaService).canActivate(ctx);
     expect(() => new PlatformOwnerGuard().canActivate(ctx)).toThrow();
   });
+});
+
+it('grants temporary admin access with the owner identity and no customer membership', async () => {
+  const jwt = new JwtService({ secret: 'customer-scope-test' });
+  const homeMembership = { user: { email: owner.email, sessionVersion: 2 }, tenant: { archivedAt: null }, role: 'viewer' };
+  const prisma = {
+    userMembership: { findUnique: vi.fn().mockResolvedValue(homeMembership) },
+    tenant: { findUnique: vi.fn().mockResolvedValue({ id: 'customer', name: 'Acme' }) },
+    auditLog: { create: vi.fn().mockResolvedValue({}) },
+  };
+  const auth = new AuthService(prisma as never, jwt, {} as never, {} as never);
+  const guard = new JwtAuthGuard(jwt, new Reflector(), prisma as never);
+  await expect(auth.openCustomerDashboard({ ...owner, email: 'admin@acme.com' }, 'customer')).rejects.toMatchObject({ status: 403 });
+  const { scope } = await auth.openCustomerDashboard({ ...owner, sessionVersion: 2 }, 'customer');
+  expect(prisma.auditLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+    tenantId: owner.tenantId, actorUserId: owner.userId, targetId: 'customer', action: 'platform.customer_dashboard_opened',
+  }) });
+  const accessToken = jwt.sign({ sub: owner.userId, tid: owner.tenantId, sv: 2 });
+  const scoped = () => context(undefined, { authorization: `Bearer ${accessToken}`, 'x-customer-scope': scope });
+  const { ctx, request } = scoped();
+  expect(await guard.canActivate(ctx)).toBe(true);
+  expect(request.user).toMatchObject({ userId: owner.userId, tenantId: 'customer', role: 'admin', customerName: 'Acme' });
+  expect(prisma.userMembership.findUnique).toHaveBeenCalledOnce();
+  expect(prisma.userMembership.findUnique).toHaveBeenCalledWith(expect.objectContaining({
+    where: { tenantId_userId: { tenantId: owner.tenantId, userId: owner.userId } },
+  }));
+  expect(() => new PlatformOwnerGuard().canActivate(ctx)).toThrow();
+  await expect(guard.canActivate(context(undefined, { authorization: `Bearer ${scope}` }).ctx)).rejects.toMatchObject({ status: 401 });
+  await expect(auth.updatePreferences(request.user!, null)).rejects.toMatchObject({ status: 403 });
+  homeMembership.user.email = 'admin@acme.com';
+  await expect(guard.canActivate(scoped().ctx)).rejects.toMatchObject({ status: 403 });
+  homeMembership.user.email = owner.email;
+  prisma.tenant.findUnique.mockResolvedValue(null);
+  await expect(auth.openCustomerDashboard({ ...owner, sessionVersion: 2 }, 'customer')).rejects.toMatchObject({ status: 404 });
+  await expect(guard.canActivate(scoped().ctx)).rejects.toMatchObject({ status: 403 });
+  expect(prisma.tenant.findUnique).toHaveBeenLastCalledWith(expect.objectContaining({ where: { id: 'customer', archivedAt: null } }));
 });
 
 describe('tenant management', () => {

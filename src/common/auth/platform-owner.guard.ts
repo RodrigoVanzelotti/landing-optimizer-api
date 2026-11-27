@@ -10,7 +10,7 @@ export class PlatformOwnerGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     // JwtAuthGuard populates this email from the database, never from a client claim.
     const user = context.switchToHttp().getRequest<FastifyRequest & { user?: AuthUser }>().user;
-    if (!user || !isPlatformOwner(user.email)) throw new ForbiddenException('Acesso exclusivo à gestão da plataforma.');
+    if (!user || user.customerName !== undefined || !isPlatformOwner(user.email)) throw new ForbiddenException('Acesso exclusivo à gestão da plataforma.');
     return true;
   }
 }

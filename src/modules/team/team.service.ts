@@ -33,7 +33,8 @@ export class TeamService {
     if (!rows.length) throw new NotFoundException('Tenant not found');
   }
 
-  private async requireAdmin(tx: Prisma.TransactionClient, user: Pick<AuthUser, 'userId' | 'tenantId'>): Promise<string> {
+  private async requireAdmin(tx: Prisma.TransactionClient, user: Pick<AuthUser, 'userId' | 'tenantId' | 'customerName'>): Promise<string> {
+    if (user.customerName !== undefined) throw new ForbiddenException('Only workspace members can manage the team');
     const membership = await tx.userMembership.findUnique({ where: { tenantId_userId: { tenantId: user.tenantId, userId: user.userId } }, include: { user: { select: { email: true } } } });
     if (!membership || !isAdmin(membership.role)) throw new ForbiddenException('Only administrators can manage the team');
     return membership.user.email;
